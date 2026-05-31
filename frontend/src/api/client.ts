@@ -18,12 +18,20 @@ export interface ApiError {
 const API_BASE_URL = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_API_BASE_URL ?? '/api';
 
 /**
- * 인증 토큰 관리 (메모리 저장 — XSS 방어)
+ * 인증 토큰 관리 (메모리 + localStorage 이중 저장)
+ * 메모리 저장으로 XSS 방어를 유지하면서, localStorage로 새로고침 시 세션 복원을 지원합니다.
  */
-let authToken: string | null = null;
+const TOKEN_STORAGE_KEY = 'auth_token';
+
+let authToken: string | null = localStorage.getItem(TOKEN_STORAGE_KEY);
 
 export function setAuthToken(token: string | null): void {
   authToken = token;
+  if (token) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
 }
 
 export function getAuthToken(): string | null {
@@ -32,6 +40,7 @@ export function getAuthToken(): string | null {
 
 export function clearAuthToken(): void {
   authToken = null;
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
 /**
@@ -54,14 +63,25 @@ apiClient.interceptors.request.use(
   (error: unknown) => Promise.reject(error),
 );
 
+/**
+ * 세션 복원 중 401 응답 시 강제 리다이렉트를 방지하기 위한 플래그
+ */
+let suppressUnauthorizedRedirect = false;
+
+export function setSuppressUnauthorizedRedirect(value: boolean): void {
+  suppressUnauthorizedRedirect = value;
+}
+
 /** 응답 인터셉터: 401 처리 */
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiError>) => {
     if (error.response?.status === 401) {
       clearAuthToken();
-      window.dispatchEvent(new CustomEvent('auth:unauthorized'));
-      window.location.href = '/login';
+      if (!suppressUnauthorizedRedirect) {
+        window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   },
