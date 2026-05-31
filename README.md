@@ -58,7 +58,8 @@
 
 - **입력 필드**: 실명, 이메일, 전화번호, 닉네임, 비밀번호
 - **필수 인증 프로세스**:
-    - 사용자는 [이메일 인증]을 성공적으로 완료해야만 회원가입을 마칠 수 있음.(Supabase Auth 기본 메일 기능 활용)
+    - 사용자는 [이메일 인증]을 성공적으로 완료해야만 회원가입을 마칠 수 있음.
+    - **이메일 인증 방식**: Supabase Auth의 기본 이메일 인증 기능을 활용. 회원가입 요청 시 Supabase가 자동으로 **가입 승인 링크(Confirmation Link)가 포함된 인증 메일**을 발송하며, 사용자가 해당 링크를 클릭하면 `is_verified` 상태가 `true`로 전환됨. 자체 인증번호(OTP) 생성·발송·검증 로직은 구현하지 않음.
     - 전화번호는 단순 텍스트 필드로 수집하되, 가입 시 별도의 SMS 발송 인증은 생략함 (추후 카드 등록 단계에서 보안을 보완).
     - DB 스키마에 인증 완료 여부 상태 플래그(`is_verified: boolean`) 및 인증 수단 데이터 기록.
 - **Unique 제약 조건**: 시스템 내에서 '닉네임', '이메일', '전화번호'는 중복될 수 없으며, 가입 시 실시간 중복 체크 API 제공.
@@ -155,8 +156,9 @@
     - 시스템 및 애플리케이션 메타데이터 수집
     - 메트릭 실시간 시각화 대시보드 인프라 설계
 - **인증/보안 (Authentication)**:
-    - 회원가입 시 이메일 또는 전화번호 인증(Verification)을 처리할 수 있는 인증 모듈 파이프라인 설계 필수.
-    - 패스워드는 반드시 단방향 해시 알고리즘(예: bcrypt)으로 암호화하여 DB에 저장.
+    - **이메일 인증**: Supabase Auth의 기본 이메일 인증 기능을 사용. 회원가입 시 Supabase가 가입 승인 링크(Confirmation Link)가 포함된 인증 메일을 자동 발송하며, 링크 클릭 시 계정이 활성화됨. 별도의 AWS SES 연동이나 자체 인증번호(OTP) 파이프라인은 구현하지 않음.
+    - **비밀번호 저장**: Supabase Auth가 내부적으로 bcrypt 기반 단방향 해시로 처리하므로 별도 해시 로직 불필요. 커스텀 `users` 테이블에는 Supabase Auth의 `auth.users.id`를 외래키로 참조하여 프로필 데이터만 저장.
+    - **세션/토큰**: Supabase Auth가 발급하는 JWT를 그대로 활용하여 API Gateway 및 Lambda Authorizer에서 검증.
 
 ---
 
@@ -187,11 +189,15 @@
 ### E. 환경별(Production/Test) 가변 인증 파이프라인
 
 - **인증 인프라**:
-    - 이메일 인증: AWS SES(Simple Email Service) API를 연동하여 실제 인증 메일 발송 구현 (Lambda 연동 시 월 62,000건 무료 혜택 활용).
-    - 문자 인증: 외부 SMS API(Twilio 또는 국내 가성비 서비스) 연동 구조 설계.
+    - **이메일 인증**: Supabase Auth의 내장 이메일 인증 기능을 사용. Supabase 대시보드에서 SMTP 설정(또는 Supabase 기본 메일 서버)을 통해 가입 승인 링크 메일이 자동 발송됨. AWS SES 직접 연동 및 자체 인증번호 발송 로직은 제거.
+    - **문자 인증**: 가입 단계에서는 SMS 인증을 생략하며, 추후 카드 등록 단계에서 보안을 보완하는 방식으로 대체.
 - **환경 변수(.env) 제어**:
-    - `NODE_ENV=production` 일 때는 실제 AWS SES 및 SMS API가 구동되어 실사용자 인증 처리.
-    - `NODE_ENV=test` 일 때는 대규모 부하 테스트(k6/JMeter) 시 외부 API 호출 비용 및 차단을 방지하기 위해 가상 인증 핸들러(Mocking)로 자동 스위칭되는 구조 필수 구현.
+    - `NODE_ENV=production` 일 때는 Supabase Auth가 실제 인증 메일을 발송하여 실사용자 인증 처리.
+    - `NODE_ENV=test` 일 때는 Supabase Auth의 **이메일 인증 확인(Confirm email) 옵션을 비활성화**하거나, Supabase 로컬 개발 환경(Supabase CLI)의 Inbucket 메일 캐처를 활용하여 실제 메일 발송 없이 인증 플로우를 테스트. 외부 메일 API 호출 비용 및 차단 없이 부하 테스트(k6/JMeter) 수행 가능.
+- **Supabase Auth 관련 환경 변수**:
+    - `SUPABASE_URL`: Supabase 프로젝트 URL
+    - `SUPABASE_ANON_KEY`: 클라이언트(프론트엔드) 공개 키
+    - `SUPABASE_SERVICE_ROLE_KEY`: 서버(Lambda) 전용 서비스 롤 키 (절대 클라이언트에 노출 금지)
 
 ---
 
