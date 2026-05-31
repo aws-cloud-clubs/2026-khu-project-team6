@@ -2,11 +2,20 @@ import { Search, Heart, Menu, Send, ChevronRight } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
+import { sendAIChat } from '../../api/ai';
 
 export default function MainApp() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading } = useAuth();
   const [chatInput, setChat] = useState('');
+  const [chatMessages, setChatMessages] = useState<
+  { sender: 'user' | 'ai'; text: string }[]
+>([
+  {
+    sender: 'ai',
+    text: '필요한 물품을 추천받아 보세요!'
+  }
+]);
   const [checkedItems, setCheckedItems] = useState<{ [key: number]: boolean }>({});
   const [activeCategory, setActiveCategory] = useState('콘서트');
 
@@ -110,6 +119,55 @@ export default function MainApp() {
       }
     });
   };
+
+
+  const handleAIChat = async () => {
+  if (!chatInput.trim()) {
+    alert('메시지를 입력해주세요.');
+    return;
+  }
+
+  const userMessage = chatInput;
+
+  try {
+    const result = await sendAIChat(userMessage);
+
+    const newChecked = { ...checkedItems };
+
+currentChecklistItems.forEach(item => {
+  const matched = result.suggestedItemTypes?.some(
+    (suggested: string) =>
+      item.title.includes(suggested) ||
+      suggested.includes(item.title)
+  );
+
+  if (matched) {
+    newChecked[item.id] = true;
+  }
+});
+
+setCheckedItems(newChecked);
+    setChatMessages(prev => [
+      ...prev,
+      {
+        sender: 'user',
+        text: userMessage
+      },
+      {
+        sender: 'ai',
+        text: result.reply
+      }
+    ]);
+
+    setChat('');
+  } catch (error) {
+    console.error('AI 호출 실패:', error);
+    alert('AI 호출 실패');
+  }
+};
+
+  
+  
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -244,13 +302,29 @@ export default function MainApp() {
         </div>
 
         <div className="flex-1 p-4 overflow-auto">
-          <div className="space-y-4">
-            <div className="text-center py-10 text-gray-400 text-sm">
-              <p>AI 챗봇에게 물어보세요!</p>
-              <p className="mt-1">필요한 물품을 추천받을 수 있어요.</p>
-            </div>
-          </div>
+  <div className="space-y-3">
+    {chatMessages.map((msg, idx) => (
+      <div
+        key={idx}
+        className={`flex ${
+          msg.sender === 'user'
+            ? 'justify-end'
+            : 'justify-start'
+        }`}
+      >
+        <div
+          className={`max-w-[85%] px-3 py-2 rounded-xl text-sm ${
+            msg.sender === 'user'
+              ? 'bg-purple-600 text-white'
+              : 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {msg.text}
         </div>
+      </div>
+    ))}
+  </div>
+</div>
 
         <div className="p-4 border-t border-gray-200">
           <div className="flex gap-2">
@@ -261,8 +335,11 @@ export default function MainApp() {
               placeholder="무엇이 궁금하신가요?"
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400"
             />
-            <button className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-lg transition-colors">
-              <Send className="w-4 h-4" />
+            <button
+              onClick={handleAIChat}
+              className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-lg transition-colors"
+>
+            <Send className="w-4 h-4" />
             </button>
           </div>
         </div>

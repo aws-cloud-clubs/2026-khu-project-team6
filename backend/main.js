@@ -7,6 +7,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const {
+  BedrockRuntimeClient,
+  InvokeModelCommand,
+} = require('@aws-sdk/client-bedrock-runtime');
 
 // ─── 환경변수 검증 ───────────────────────────────────────────────────────────
 const { SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY, PORT, FRONTEND_URL } = process.env;
@@ -15,6 +19,14 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('❌ SUPABASE_URL 또는 SUPABASE_KEY가 .env에 설정되지 않았습니다.');
   process.exit(1);
 }
+const bedrock = new BedrockRuntimeClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
 
 // ─── Supabase 클라이언트 초기화 ──────────────────────────────────────────────
 // anon key 클라이언트 (프론트엔드와 동일 권한 — Auth 호출용)
@@ -44,6 +56,82 @@ app.get('/', (req, res) => {
       me: 'GET /auth/me',
     },
   });
+});
+
+app.post('/ai/chat', async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    const command = new InvokeModelCommand({
+      modelId: 'us.anthropic.claude-sonnet-4-6',
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 300,
+        messages: [
+          {
+            role: 'user',
+            content: `
+사용자 요청:
+${message}
+
+당신은 대여 물품 추천 AI입니다.
+
+반드시 아래 JSON 형식으로만 답변하세요.
+
+{
+  "reply":"사용자에게 보여줄 자연스러운 답변",
+  "suggestedItemTypes":["추천물품1","추천물품2","추천물품3"]
+}
+
+예시:
+
+사용자: 캠핑 가는데 뭐 필요해?
+
+{
+  "reply":"캠핑에는 텐트, 버너, 테이블이 필요합니다.",
+  "suggestedItemTypes":["텐트","버너","테이블"]
+}
+
+JSON 외의 설명은 절대 출력하지 마세요.
+`
+          }
+        ]
+      })
+    });
+
+    const response = await bedrock.send(command);
+
+    const result = JSON.parse(
+      new TextDecoder().decode(response.body)
+    );
+
+    const text = result.content[0].text;
+
+const cleanText = text
+  .replace(/```json/g, '')
+  .replace(/```/g, '')
+  .trim();
+
+console.log('정제 후:');
+console.log(cleanText);
+
+const parsed = JSON.parse(cleanText);
+console.log('Claude 파싱 결과');
+console.log(parsed);
+
+
+    res.json(parsed);
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      reply: 'AI 처리 실패',
+      suggestedItemTypes: []
+    });
+  }
 });
 
 app.get('/health', (req, res) => {
@@ -498,6 +586,86 @@ app.post('/items', async (req, res) => {
 });
 
 
+// ─── 상품 조회 ───────────────────────────────────────────────
+app.get('/items', async (req, res) => {
+  try {
+    const { category } = req.query;
+
+    let query = supabase
+      .from('products')
+      .select('*');
+
+    if (category) {
+      query = query.eq('category', category);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      return res.status(400).json({
+        error,
+      });
+    }
+
+    const items = (data || []).map((item) => ({
+      id: item.id,
+      title: item.title,
+      price: `${item.price}원`,
+      image: item.image_url,
+      tradeMethod: item.trade_type,
+    }));
+
+    res.json({
+      items,
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      error: {
+        message: '상품 조회 실패',
+      },
+    });
+  }
+});
+
+
+
+app.get('/bedrock-test', async (req, res) => {
+  try {
+    const command = new InvokeModelCommand({
+  modelId: 'us.anthropic.claude-sonnet-4-6',
+  contentType: 'application/json',
+  accept: 'application/json',
+  body: JSON.stringify({
+    anthropic_version: 'bedrock-2023-05-31',
+    max_tokens: 50,
+    messages: [
+      {
+        role: 'user',
+        content: 'hello'
+      }
+    ]
+  })
+});
+
+    const response = await bedrock.send(command);
+
+    res.json({
+      success: true,
+      result: JSON.parse(
+        new TextDecoder().decode(response.body)
+      )
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
 // ─── 서버 시작 ───────────────────────────────────────────────────────────────
 const port = PORT || 4000;
 app.listen(port, () => {
