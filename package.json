@@ -1,0 +1,17 @@
+{
+  "name": "haruman-rental-platform",
+  "version": "1.0.0",
+  "description": "HARUMAN P2P/B2C 맞춤형 대여 중개 매칭 플랫폼",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "test": "npm run test --workspace=backend",
+    "test:backend": "npm run test --workspace=backend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "lint": "npm run lint --workspace=backend && npm run lint --workspace=frontend"
+  }
+}
