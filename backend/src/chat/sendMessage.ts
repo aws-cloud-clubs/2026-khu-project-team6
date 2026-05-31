@@ -5,13 +5,9 @@
  * Requirements: 6.4, 6.5, 12.1, 12.2, 12.3, 12.4, 12.5, 13.1, 13.2, 13.3
  */
 
-<<<<<<< HEAD
-import { verifyJWT } from '../auth/jwt';
-=======
->>>>>>> c130ce5fbf014de924cb03b5543fb319a8c18bcd
 import { getSupabaseClient } from '../db/client';
 import { AppError, ErrorCodes } from '../common/errors';
-import { analyzeMessage } from './cleanbot';
+import { analyzeMessage, CleanBotResult } from './cleanbot';
 import { pushNotification } from '../notify/push';
 import type { NotificationPayload } from '../notify/push';
 
@@ -243,7 +239,16 @@ export const handler = async (
     }
 
     // 4. Clean_Bot 분석 (Requirements: 12.3, 13.1, 13.4)
-    const cleanBotResult = await analyzeMessage(content);
+    // 5초 타임아웃: 초과 시 메시지 통과 허용 + 실패 로그 기록
+    const cleanBotResult: CleanBotResult = await Promise.race<CleanBotResult>([
+      analyzeMessage(content),
+      new Promise<CleanBotResult>((resolve) =>
+        setTimeout(() => {
+          console.warn('[sendMessage] Clean_Bot 5초 타임아웃 — 메시지 통과 허용');
+          resolve({ verdict: 'failed' });
+        }, 5000),
+      ),
+    ]);
 
     const supabase = getSupabaseClient();
 

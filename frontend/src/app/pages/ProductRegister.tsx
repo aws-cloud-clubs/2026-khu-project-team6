@@ -1,6 +1,7 @@
 import { ArrowLeft, Upload, X } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
+import { useAuth } from '../../context/AuthContext';
 
 export default function ProductRegister() {
   const navigate = useNavigate();
@@ -14,6 +15,7 @@ export default function ProductRegister() {
   const [cardNumber, setCardNumber] = useState('');
   const [cardVerified, setCardVerified] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
 
   const categories = [
     '콘서트',
@@ -97,23 +99,58 @@ export default function ProductRegister() {
     setCardVerified(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!productName || !category || !subCategory || !price || !description || !tradeMethod) {
-      alert('모든 항목을 입력해주세요.');
-      return;
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+
+  if (!productName || !category || !subCategory || !price || !description || !tradeMethod) {
+    alert('모든 항목을 입력해주세요.');
+    return;
+  }
+
+  if (!imagePreview) {
+    alert('상품 이미지를 업로드해주세요.');
+    return;
+  }
+
+  if (!cardVerified) {
+    alert('카드 인증을 완료해주세요.');
+    return;
+  }
+
+  try {
+    const response = await fetch('http://localhost:4000/items', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: productName,
+        description,
+        category,
+        subcategory: subCategory,
+        price: Number(price.replace(/[^0-9]/g, '')),
+        deposit: 0,
+        trade_type: tradeMethod,
+        image_url: imagePreview,
+        owner_id: null,
+      }),
+    });
+
+    const result = await response.json();
+
+    console.log('상품 등록 결과:', result);
+
+    if (!response.ok) {
+      throw new Error('상품 등록 실패');
     }
-    if (!imagePreview) {
-      alert('상품 이미지를 업로드해주세요.');
-      return;
-    }
-    if (!cardVerified) {
-      alert('카드 인증을 완료해주세요.');
-      return;
-    }
+
     alert('상품이 등록되었습니다!');
     navigate('/mypage');
-  };
+  } catch (error) {
+    console.error(error);
+    alert('상품 등록 실패');
+  }
+};
 
   return (
     <div className="min-h-screen bg-gray-50">
