@@ -5,7 +5,10 @@
  * Requirements: 6.4, 6.5, 12.1, 12.2, 12.3, 12.4, 12.5, 13.1, 13.2, 13.3
  */
 
+<<<<<<< HEAD
 import { verifyJWT } from '../auth/jwt';
+=======
+>>>>>>> c130ce5fbf014de924cb03b5543fb319a8c18bcd
 import { getSupabaseClient } from '../db/client';
 import { AppError, ErrorCodes } from '../common/errors';
 import { analyzeMessage } from './cleanbot';

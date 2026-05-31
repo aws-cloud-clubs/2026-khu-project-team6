@@ -1,9 +1,11 @@
 {
   "name": "haruman-backend",
   "version": "1.0.0",
-  "description": "HARUMAN Rental Platform - Backend Lambda Functions",
-  "main": "dist/index.js",
+  "description": "HARUMAN Rental Platform - Backend (Express + Lambda)",
+  "main": "main.js",
   "scripts": {
+    "start": "node main.js",
+    "dev": "node --watch main.js",
     "build": "tsc",
     "test": "jest",
     "test:unit": "jest tests/unit",
@@ -19,13 +21,20 @@
     "@aws-sdk/client-ses": "^3.600.0",
     "@supabase/supabase-js": "^2.106.2",
     "bcrypt": "^5.1.1",
-    "jsonwebtoken": "^9.0.2"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
     "@types/jest": "^29.5.14",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.19.41",
+    "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^7.16.0",
     "@typescript-eslint/parser": "^7.16.0",
     "eslint": "^8.57.0",
