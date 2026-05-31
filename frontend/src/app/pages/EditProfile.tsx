@@ -1,9 +1,12 @@
 import { ArrowLeft } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
+import { useAuth } from '../../context/AuthContext';
+import { getMyProfile, updateMyProfile } from '../../api/users';
 
 export default function EditProfile() {
   const navigate = useNavigate();
+  const { isAuthenticated, isLoading } = useAuth();
   const [name, setName] = useState('');
   const [nickname, setNickname] = useState('');
   const [email, setEmail] = useState('');
@@ -11,15 +14,30 @@ export default function EditProfile() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setName(localStorage.getItem('userName') || '');
-    setNickname(localStorage.getItem('userNickname') || '');
-    setEmail(localStorage.getItem('userEmail') || '');
-    setPhone(localStorage.getItem('userPhone') || '');
-  }, []);
+    if (isLoading) return;
 
-  const handleSubmit = (e: React.FormEvent) => {
+    if (!isAuthenticated) {
+      navigate('/login');
+      return;
+    }
+
+    getMyProfile()
+      .then((profile) => {
+        setName(profile.real_name || '');
+        setNickname(profile.nickname || '');
+        setEmail(profile.email || '');
+        setPhone(profile.phone || '');
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  }, [isAuthenticated, isLoading, navigate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (newPassword && newPassword !== confirmPassword) {
@@ -27,17 +45,29 @@ export default function EditProfile() {
       return;
     }
 
-    // 정보 업데이트
-    localStorage.setItem('userName', name);
-    localStorage.setItem('userNickname', nickname);
-    localStorage.setItem('userEmail', email);
-    if (phone) {
-      localStorage.setItem('userPhone', phone);
-    }
+    try {
+      const updateData: { nickname?: string; password?: string; current_password?: string } = {};
+      if (nickname) updateData.nickname = nickname;
+      if (newPassword) {
+        updateData.password = newPassword;
+        updateData.current_password = currentPassword;
+      }
 
-    alert('회원정보가 수정되었습니다!');
-    navigate('/mypage');
+      await updateMyProfile(updateData);
+      alert('회원정보가 수정되었습니다!');
+      navigate('/mypage');
+    } catch {
+      alert('회원정보 수정에 실패했습니다.');
+    }
   };
+
+  if (loading || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <p className="text-gray-500">로딩 중...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -65,11 +95,10 @@ export default function EditProfile() {
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="이름을 입력하세요"
-              className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400"
-              required
+              disabled
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm bg-gray-50 text-gray-500"
             />
+            <p className="text-xs text-gray-400 mt-1">이름은 변경할 수 없습니다.</p>
           </div>
 
           {/* Nickname */}
@@ -95,11 +124,10 @@ export default function EditProfile() {
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="이메일을 입력하세요"
-              className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400"
-              required
+              disabled
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm bg-gray-50 text-gray-500"
             />
+            <p className="text-xs text-gray-400 mt-1">이메일은 변경할 수 없습니다.</p>
           </div>
 
           {/* Phone */}
@@ -110,10 +138,10 @@ export default function EditProfile() {
             <input
               type="tel"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="010-0000-0000"
-              className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400"
+              disabled
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm bg-gray-50 text-gray-500"
             />
+            <p className="text-xs text-gray-400 mt-1">전화번호는 변경할 수 없습니다.</p>
           </div>
 
           {/* Divider */}

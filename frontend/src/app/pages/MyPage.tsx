@@ -7,10 +7,12 @@ import type { UserProfile } from '../../api/users';
 
 export default function MyPage() {
   const navigate = useNavigate();
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, isLoading, logout } = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
   useEffect(() => {
+    if (isLoading) return;
+
     if (!isAuthenticated) {
       navigate('/login');
       return;
@@ -18,7 +20,7 @@ export default function MyPage() {
     getMyProfile()
       .then(setProfile)
       .catch(() => {/* 오류 시 AuthContext가 401 처리 */});
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, isLoading, navigate]);
 
   const handleLogout = () => {
     logout();

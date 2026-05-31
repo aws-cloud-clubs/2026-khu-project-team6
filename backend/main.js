@@ -310,12 +310,129 @@ app.get('/auth/me', async (req, res) => {
     });
   }
 
+  // 커스텀 users 테이블에서 전체 프로필 조회
+  let profile = null;
+  const client = supabaseAdmin || supabase;
+  const { data: profileData } = await client
+    .from('users')
+    .select('id, real_name, email, phone, nickname, role, is_verified, created_at')
+    .eq('id', data.user.id)
+    .single();
+  profile = profileData;
+
   res.json({
     user: {
       id: data.user.id,
+      real_name: profile?.real_name || data.user.user_metadata?.real_name || '',
       email: data.user.email,
-      nickname: data.user.user_metadata?.nickname || '',
+      phone: profile?.phone || data.user.user_metadata?.phone || '',
+      nickname: profile?.nickname || data.user.user_metadata?.nickname || '',
+      role: profile?.role || 'user',
       is_verified: !!data.user.email_confirmed_at,
+      created_at: profile?.created_at || data.user.created_at,
+    },
+  });
+});
+
+// ─── /users/me 프로필 조회 (프론트엔드 호환) ─────────────────────────────────
+app.get('/users/me', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data, error } = await supabase.auth.getUser(token);
+
+  if (error || !data.user) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다.' },
+    });
+  }
+
+  let profile = null;
+  const client = supabaseAdmin || supabase;
+  const { data: profileData } = await client
+    .from('users')
+    .select('id, real_name, email, phone, nickname, role, is_verified, created_at')
+    .eq('id', data.user.id)
+    .single();
+  profile = profileData;
+
+  res.json({
+    user: {
+      id: data.user.id,
+      real_name: profile?.real_name || data.user.user_metadata?.real_name || '',
+      email: data.user.email,
+      phone: profile?.phone || data.user.user_metadata?.phone || '',
+      nickname: profile?.nickname || data.user.user_metadata?.nickname || '',
+      role: profile?.role || 'user',
+      is_verified: !!data.user.email_confirmed_at,
+      created_at: profile?.created_at || data.user.created_at,
+    },
+  });
+});
+
+// ─── /users/me 프로필 수정 ───────────────────────────────────────────────────
+app.put('/users/me', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data, error } = await supabase.auth.getUser(token);
+
+  if (error || !data.user) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다.' },
+    });
+  }
+
+  const { nickname, password } = req.body;
+  const client = supabaseAdmin || supabase;
+
+  // 닉네임 변경
+  if (nickname) {
+    await client.from('users').update({ nickname }).eq('id', data.user.id);
+    if (supabaseAdmin) {
+      await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+        user_metadata: { ...data.user.user_metadata, nickname },
+      });
+    }
+  }
+
+  // 비밀번호 변경
+  if (password && supabaseAdmin) {
+    const { error: pwError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, { password });
+    if (pwError) {
+      return res.status(400).json({
+        error: { code: 'AUTH_ERROR', message: '비밀번호 변경에 실패했습니다.' },
+      });
+    }
+  }
+
+  // 업데이트된 프로필 반환
+  const { data: profileData } = await client
+    .from('users')
+    .select('id, real_name, email, phone, nickname, role, is_verified, created_at')
+    .eq('id', data.user.id)
+    .single();
+
+  res.json({
+    user: {
+      id: data.user.id,
+      real_name: profileData?.real_name || '',
+      email: data.user.email,
+      phone: profileData?.phone || '',
+      nickname: profileData?.nickname || nickname || '',
+      role: profileData?.role || 'user',
+      is_verified: !!data.user.email_confirmed_at,
+      created_at: profileData?.created_at || data.user.created_at,
     },
   });
 });

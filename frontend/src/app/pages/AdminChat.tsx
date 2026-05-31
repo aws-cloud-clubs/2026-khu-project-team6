@@ -2,25 +2,25 @@ import { ArrowLeft, Send } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 
+interface Message {
+  id: number;
+  text: string;
+  sender: 'user' | 'admin';
+  time: string;
+}
+
 export default function AdminChat() {
   const navigate = useNavigate();
   const location = useLocation();
   const product = location.state?.product || {};
 
   const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      text: '안녕하세요! HARUMAN 고객센터입니다. 무엇을 도와드릴까요?',
-      sender: 'admin',
-      time: '오후 3:00',
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
 
   const handleSend = () => {
     if (!message.trim()) return;
 
-    const newMessage = {
+    const newMessage: Message = {
       id: messages.length + 1,
       text: message,
       sender: 'user',
@@ -29,17 +29,6 @@ export default function AdminChat() {
 
     setMessages([...messages, newMessage]);
     setMessage('');
-
-    // 관리자 자동 응답 (시뮬레이션)
-    setTimeout(() => {
-      const adminResponse = {
-        id: messages.length + 2,
-        text: '문의 내용을 확인했습니다. 곧 담당자가 답변드리겠습니다.',
-        sender: 'admin',
-        time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-      };
-      setMessages(prev => [...prev, adminResponse]);
-    }, 1000);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -72,11 +61,13 @@ export default function AdminChat() {
         <div className="bg-white border-b border-gray-200 px-8 py-3">
           <div className="flex gap-3 items-center">
             <div className="w-12 h-12 bg-gray-100 rounded-lg overflow-hidden">
-              <img
-                src={product.image}
-                alt={product.title}
-                className="w-full h-full object-cover"
-              />
+              {product.image && (
+                <img
+                  src={product.image}
+                  alt={product.title}
+                  className="w-full h-full object-cover"
+                />
+              )}
             </div>
             <div className="flex-1">
               <p className="text-sm font-medium line-clamp-1">{product.title}</p>
@@ -90,30 +81,37 @@ export default function AdminChat() {
       {/* Messages */}
       <div className="flex-1 overflow-auto p-8">
         <div className="max-w-3xl mx-auto space-y-4">
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-xs ${
-                  msg.sender === 'user'
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-white text-gray-900'
-                } rounded-xl px-4 py-3 shadow-sm`}
-              >
-                {msg.sender === 'admin' && (
-                  <p className="text-xs text-purple-600 font-medium mb-1">관리자</p>
-                )}
-                <p className="text-sm">{msg.text}</p>
-                <p className={`text-xs mt-1 ${
-                  msg.sender === 'user' ? 'text-purple-200' : 'text-gray-400'
-                }`}>
-                  {msg.time}
-                </p>
-              </div>
+          {messages.length === 0 ? (
+            <div className="text-center py-20 text-gray-400">
+              <p>문의 내용을 입력해주세요.</p>
+              <p className="text-sm mt-1">관리자가 확인 후 답변드립니다.</p>
             </div>
-          ))}
+          ) : (
+            messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-xs ${
+                    msg.sender === 'user'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-900'
+                  } rounded-xl px-4 py-3 shadow-sm`}
+                >
+                  {msg.sender === 'admin' && (
+                    <p className="text-xs text-purple-600 font-medium mb-1">관리자</p>
+                  )}
+                  <p className="text-sm">{msg.text}</p>
+                  <p className={`text-xs mt-1 ${
+                    msg.sender === 'user' ? 'text-purple-200' : 'text-gray-400'
+                  }`}>
+                    {msg.time}
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 

@@ -57,33 +57,12 @@ export default function Home() {
     }, 2000);
   };
 
-  const categories = [
-    {
-      title: '카메라 2,000원',
-      subtitle: '(1일 기준, 10월 평균)',
-      image: 'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjYW1lcmElMjBwaG90b2dyYXBoeSUyMGVxdWlwbWVudHxlbnwxfHx8fDE3ODAyMDM1NTl8MA&ixlib=rb-4.1.0&q=80&w=1080',
-    },
-    {
-      title: '캠핑 랜턴',
-      subtitle: '(1일 기준, 10월 평균)',
-      image: 'https://images.unsplash.com/photo-1466220549276-aef9ce186540?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjYW1waW5nJTIwY29va2luZyUyMGVxdWlwbWVudHxlbnwxfHx8fDE3ODAyMDM1NjB8MA&ixlib=rb-4.1.0&q=80&w=1080',
-    },
-    {
-      title: '캠핑 의자 2,000원',
-      subtitle: '(1일 기준, 10월 평균)',
-      image: 'https://images.unsplash.com/photo-1618886614638-80e3c103d31a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxmb3JtYWwlMjBzdWl0JTIwamFja2V0JTIwY2xvdGhpbmd8ZW58MXx8fHwxNzgwMjAzNTYwfDA&ixlib=rb-4.1.0&q=80&w=1080',
-    },
-    {
-      title: '코펠 세트',
-      subtitle: '(1일 기준, 10월 평균)',
-      image: 'https://images.unsplash.com/photo-1466220549276-aef9ce186540?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjYW1waW5nJTIwY29va2luZyUyMGVxdWlwbWVudHxlbnwxfHx8fDE3ODAyMDM1NjB8MA&ixlib=rb-4.1.0&q=80&w=1080',
-    },
-    {
-      title: 'DSLR 카메라',
-      subtitle: '(1일 기준, 10월 평균)',
-      image: 'https://images.unsplash.com/photo-1542754482-8fd5c91d006e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkcm9uZSUyMGNhbWVyYSUyMGdvcHJvfGVufDF8fHx8MTc4MDIwMzU2MXww&ixlib=rb-4.1.0&q=80&w=1080',
-    },
-  ];
+  const [categories, setCategories] = useState<Array<{ title: string; subtitle: string; image: string }>>([]);
+
+  useEffect(() => {
+    // TODO: 백엔드 API에서 인기 카테고리를 가져오도록 연동
+    setCategories([]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-white">
@@ -227,34 +206,36 @@ export default function Home() {
       </div>
 
       {/* Categories Section */}
-      <div className="bg-gray-50 px-8 py-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-6">
-            <h2 className="text-lg font-medium">인기 렌탈 카테고리 추천</h2>
-          </div>
+      {categories.length > 0 && (
+        <div className="bg-gray-50 px-8 py-8">
+          <div className="max-w-7xl mx-auto">
+            <div className="mb-6">
+              <h2 className="text-lg font-medium">인기 렌탈 카테고리 추천</h2>
+            </div>
 
-          <div className="grid grid-cols-5 gap-4">
-            {categories.map((category, index) => (
-              <div
-                key={index}
-                className="group cursor-pointer"
-              >
-                <div className="relative aspect-square rounded-xl overflow-hidden mb-2 bg-gray-200">
-                  <ImageWithFallback
-                    src={category.image}
-                    alt={category.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
+            <div className="grid grid-cols-5 gap-4">
+              {categories.map((category, index) => (
+                <div
+                  key={index}
+                  className="group cursor-pointer"
+                >
+                  <div className="relative aspect-square rounded-xl overflow-hidden mb-2 bg-gray-200">
+                    <ImageWithFallback
+                      src={category.image}
+                      alt={category.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xs font-medium mb-0.5">{category.title}</div>
+                    <div className="text-[10px] text-gray-500">{category.subtitle}</div>
+                  </div>
                 </div>
-                <div className="text-center">
-                  <div className="text-xs font-medium mb-0.5">{category.title}</div>
-                  <div className="text-[10px] text-gray-500">{category.subtitle}</div>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

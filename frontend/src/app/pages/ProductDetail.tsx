@@ -5,18 +5,17 @@ export default function ProductDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const product = location.state?.product || {
-    id: 1,
+    id: '',
     title: '상품명',
     price: '0원',
     image: '',
-    tradeMethod: '직거래', // 기본값
+    tradeMethod: '직거래',
   };
 
   const handleOrder = () => {
     if (product.tradeMethod === '픽업존') {
       navigate('/order', { state: { product } });
     } else {
-      // 직거래인 경우 채팅 페이지로 이동
       navigate('/chat', { state: { product } });
     }
   };
@@ -42,11 +41,17 @@ export default function ProductDetail() {
           {/* Left - Image */}
           <div className="flex-1">
             <div className="aspect-square bg-gray-100 rounded-xl overflow-hidden">
-              <img
-                src={product.image}
-                alt={product.title}
-                className="w-full h-full object-cover"
-              />
+              {product.image ? (
+                <img
+                  src={product.image}
+                  alt={product.title}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-400">
+                  이미지 없음
+                </div>
+              )}
             </div>
           </div>
 
@@ -64,42 +69,13 @@ export default function ProductDetail() {
                 </span>
               </div>
               <div className="text-3xl font-bold text-purple-600 mb-2">{product.price}</div>
-              <div className="flex items-center gap-4 text-sm text-gray-500">
-                <span>배송 · 23</span>
-                <span>조회 3</span>
-                <span>찜 1</span>
-              </div>
             </div>
 
-            <div className="space-y-4 mb-6 pb-6 border-b border-gray-200">
-              <div className="flex">
-                <div className="w-24 text-sm text-gray-600">보관장소</div>
-                <div className="flex-1 text-sm">자도래요</div>
+            {product.description && (
+              <div className="mb-6 pb-6 border-b border-gray-200">
+                <p className="text-sm text-gray-700">{product.description}</p>
               </div>
-              <div className="flex">
-                <div className="w-24 text-sm text-gray-600">생산시점</div>
-                <div className="flex-1 text-sm">새 상품 (미사용)</div>
-              </div>
-            </div>
-
-            <div className="mb-6 pb-6 border-b border-gray-200">
-              <div className="text-sm font-medium mb-2">바꿀랑 써드랑한다</div>
-              <div className="text-sm text-gray-600">(텐덴카 카드 혜와)</div>
-            </div>
-
-            <div className="mb-6 pb-6 border-b border-gray-200">
-              <div className="text-sm font-medium mb-2">배송비 (?)</div>
-              <div className="text-sm text-gray-600 mb-1">당일 2,000원</div>
-              <div className="text-sm text-gray-600">CJ대한통운 2,000원</div>
-            </div>
-
-            <div className="mb-8">
-              <div className="flex gap-2">
-                <span className="px-3 py-1 bg-gray-100 text-gray-700 text-xs rounded-full">#카드</span>
-                <span className="px-3 py-1 bg-gray-100 text-gray-700 text-xs rounded-full">#지갑</span>
-                <span className="px-3 py-1 bg-gray-100 text-gray-700 text-xs rounded-full">#명함기타</span>
-              </div>
-            </div>
+            )}
 
             <button
               onClick={handleOrder}

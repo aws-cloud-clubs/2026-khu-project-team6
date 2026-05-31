@@ -1,23 +1,23 @@
 import { Search, Heart, Menu, Send, ChevronRight } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
+import { useAuth } from '../../context/AuthContext';
 
 export default function MainApp() {
   const navigate = useNavigate();
+  const { isAuthenticated, isLoading } = useAuth();
   const [chatInput, setChat] = useState('');
   const [checkedItems, setCheckedItems] = useState<{ [key: number]: boolean }>({});
   const [activeCategory, setActiveCategory] = useState('콘서트');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
-    const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
-    setIsLoggedIn(loggedIn);
+    if (isLoading) return;
 
-    if (!loggedIn) {
+    if (!isAuthenticated) {
       alert('로그인이 필요합니다.');
       navigate('/login');
     }
-  }, [navigate]);
+  }, [isAuthenticated, isLoading, navigate]);
 
   const categories = [
     { icon: '🎤', label: '콘서트' },
@@ -130,7 +130,7 @@ export default function MainApp() {
             <Heart className="w-5 h-5" />
           </button>
           <button
-            onClick={() => navigate(isLoggedIn ? '/mypage' : '/login')}
+            onClick={() => navigate(isAuthenticated ? '/mypage' : '/login')}
             className="text-gray-600 hover:text-gray-900 transition-colors"
           >
             <Menu className="w-5 h-5" />
@@ -180,32 +180,39 @@ export default function MainApp() {
 
           {/* Checklist Items */}
           <div className="space-y-3 mb-6">
-            {currentChecklistItems.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center gap-4 bg-white rounded-xl p-4 hover:shadow-sm transition-shadow cursor-pointer"
-                onClick={() => toggleCheck(item.id)}
-              >
-                <div className="flex-shrink-0">
-                  <div
-                    className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                      checkedItems[item.id]
-                        ? 'bg-purple-600 border-purple-600'
-                        : 'border-gray-300'
-                    }`}
-                  >
-                    {checkedItems[item.id] && (
-                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
+            {currentChecklistItems.length > 0 ? (
+              currentChecklistItems.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-4 bg-white rounded-xl p-4 hover:shadow-sm transition-shadow cursor-pointer"
+                  onClick={() => toggleCheck(item.id)}
+                >
+                  <div className="flex-shrink-0">
+                    <div
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                        checkedItems[item.id]
+                          ? 'bg-purple-600 border-purple-600'
+                          : 'border-gray-300'
+                      }`}
+                    >
+                      {checkedItems[item.id] && (
+                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-medium text-sm">{item.title}</div>
                   </div>
                 </div>
-                <div className="flex-1">
-                  <div className="font-medium text-sm">{item.title}</div>
-                </div>
+              ))
+            ) : (
+              <div className="text-center py-10 text-gray-400">
+                <p>체크리스트 항목이 없습니다.</p>
+                <p className="text-sm mt-1">AI 챗봇에게 추천을 요청해보세요!</p>
               </div>
-            ))}
+            )}
           </div>
         </div>
 
@@ -238,31 +245,9 @@ export default function MainApp() {
 
         <div className="flex-1 p-4 overflow-auto">
           <div className="space-y-4">
-            <div className="bg-purple-50 rounded-lg p-3">
-              <div className="text-sm">{activeCategory}을(를) 준비하시는군요! {categories.find(c => c.label === activeCategory)?.icon}</div>
-              <div className="text-sm mt-1">필요한 물품을 추천해드릴까요?</div>
-            </div>
-
-            <div className="bg-gray-50 rounded-lg p-3 ml-8">
-              <div className="text-sm text-gray-700">네, 추천해주세요</div>
-            </div>
-
-            <div className="bg-purple-50 rounded-lg p-3">
-              <div className="text-sm mb-2">추천 아이템을 체크리스트에 추가했어요:</div>
-              <div className="space-y-1 text-xs">
-                {currentChecklistItems.slice(0, 3).map((item) => (
-                  <div key={item.id}>✅ {item.title}</div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button className="bg-white border border-gray-200 hover:border-purple-300 px-3 py-2 rounded-lg text-xs transition-colors">
-                더 추천해줘
-              </button>
-              <button className="bg-white border border-gray-200 hover:border-purple-300 px-3 py-2 rounded-lg text-xs transition-colors">
-                가격 비교하기
-              </button>
+            <div className="text-center py-10 text-gray-400 text-sm">
+              <p>AI 챗봇에게 물어보세요!</p>
+              <p className="mt-1">필요한 물품을 추천받을 수 있어요.</p>
             </div>
           </div>
         </div>
