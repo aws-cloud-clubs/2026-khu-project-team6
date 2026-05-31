@@ -437,6 +437,67 @@ app.put('/users/me', async (req, res) => {
   });
 });
 
+// ─── 상품 등록 ───────────────────────────────────────────────
+app.post('/items', async (req, res) => {
+  console.log('BODY:', req.body);
+
+  try {
+    const {
+      title,
+      description,
+      category,
+      subcategory,
+      price,
+      deposit,
+      trade_type,
+      image_url,
+      owner_id,
+    } = req.body;
+
+    const { data, error } = await supabase
+      .from('products')
+      .insert({
+        title,
+        description,
+        category,
+        subcategory,
+        price,
+        deposit,
+        trade_type,
+        image_url,
+        owner_id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error(
+        'SUPABASE ERROR:',
+        JSON.stringify(error, null, 2)
+      );
+
+      return res.status(400).json({
+        error,
+      });
+    }
+
+    console.log('등록 성공:', data);
+
+    res.status(201).json({
+      item: data,
+    });
+  } catch (err) {
+    console.error('SERVER ERROR:', err);
+
+    res.status(500).json({
+      error: {
+        message: '상품 등록 실패',
+      },
+    });
+  }
+});
+
+
 // ─── 서버 시작 ───────────────────────────────────────────────────────────────
 const port = PORT || 4000;
 app.listen(port, () => {
