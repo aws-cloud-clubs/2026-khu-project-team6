@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { ImageWithFallback } from '../components/ImageWithFallback';
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
+import { useAuth } from '../../context/AuthContext';
 
 const experienceImages = [
   {
@@ -37,9 +38,9 @@ const experienceImages = [
 
 export default function Home() {
   const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -47,10 +48,6 @@ export default function Home() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    setIsLoggedIn(localStorage.getItem('isLoggedIn') === 'true');
   }, []);
 
   const handleSearchClick = () => {
@@ -98,7 +95,7 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-4">
-          {isLoggedIn ? (
+          {isAuthenticated ? (
             <button
               onClick={() => navigate('/mypage')}
               className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"

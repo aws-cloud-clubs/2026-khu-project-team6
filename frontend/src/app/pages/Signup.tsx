@@ -1,37 +1,48 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
-import { register, checkDuplicate, resendVerification } from '../../api/auth';
-import type { AxiosError } from 'axios';
-import type { ApiError } from '../../api/client';
+import { supabase } from '../../lib/supabase';
+import { checkDuplicate } from '../../api/auth';
 
 type DuplicateState = 'idle' | 'checking' | 'available' | 'taken';
 
+/**
+ * 2단계 회원가입 플로우
+ * Step 1: 이메일 입력 → signUp(임시 비밀번호) → 인증 메일 발송 → 링크 클릭 대기
+ * Step 2: 인증 완료 감지 → 나머지 정보 입력 → updateUser(진짜 비밀번호 + metadata)
+ */
 export default function Signup() {
   const navigate = useNavigate();
 
+  // ─── Step 상태 ─────────────────────────────────────────────────────────────
+  const [step, setStep] = useState<1 | 2>(1);
+
+  // ─── Step 1: 이메일 인증 ───────────────────────────────────────────────────
+  const [email, setEmail] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isEmailSent, setIsEmailSent] = useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
+
+  // ─── Step 2: 나머지 정보 ───────────────────────────────────────────────────
   const [name, setName] = useState('');
   const [nickname, setNickname] = useState('');
   const [nicknameDup, setNicknameDup] = useState<DuplicateState>('idle');
   const [phone, setPhone] = useState('');
   const [phoneDup, setPhoneDup] = useState<DuplicateState>('idle');
-  const [email, setEmail] = useState('');
-  const [emailDup, setEmailDup] = useState<DuplicateState>('idle');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
-  const [isCodeSent, setIsCodeSent] = useState(false);
-  const [isVerified, setIsVerified] = useState(false);
   const [agreeService, setAgreeService] = useState(false);
   const [agreePrivacy, setAgreePrivacy] = useState(false);
   const [agreeDeposit, setAgreeDeposit] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
 
-  // 500ms debounce 타이머
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
+  // debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const debounceCheck = useCallback(
-    (field: 'email' | 'nickname' | 'phone', value: string, setter: (s: DuplicateState) => void) => {
+    (field: 'nickname' | 'phone', value: string, setter: (s: DuplicateState) => void) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (!value.trim()) { setter('idle'); return; }
       setter('checking');
@@ -47,66 +58,110 @@ export default function Signup() {
     [],
   );
 
-  const handleSendCode = async () => {
-    if (!email || !email.includes('@')) { setErrorMsg('올바른 이메일 주소를 입력하세요.'); return; }
-    try {
-      await resendVerification(email);
-      setIsCodeSent(true);
-      setIsVerified(true); // Supabase Auth 링크 방식이므로 메일 발송 = 인증 대기 상태
-      setErrorMsg('');
-    } catch {
-      setErrorMsg('인증 이메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
+  // ─── onAuthStateChange: 인증 링크 클릭 후 세션 감지 ────────────────────────
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // 사용자가 메일 링크를 클릭하고 리다이렉트되면 SIGNED_IN 이벤트 발생
+      if (event === 'SIGNED_IN' && session?.user?.email_confirmed_at) {
+        setIsEmailVerified(true);
+        setStep(2);
+      }
+    });
+
+    // 페이지 로드 시 이미 세션이 있는지 확인 (링크 클릭 후 리다이렉트된 경우)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.email_confirmed_at) {
+        setEmail(session.user.email || '');
+        setIsEmailVerified(true);
+        setStep(2);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ─── Step 1: 인증메일 전송 ─────────────────────────────────────────────────
+  const handleSendVerification = async () => {
+    if (!email || !email.includes('@')) {
+      setErrorMsg('올바른 이메일 주소를 입력하세요.');
+      return;
     }
+
+    setIsSending(true);
+    setErrorMsg('');
+
+    // 임시 랜덤 비밀번호 생성 (나중에 Step 2에서 진짜 비밀번호로 덮어씀)
+    const tempPassword = crypto.randomUUID() + '!Aa1';
+
+    const { error } = await supabase.auth.signUp({
+      email,
+      password: tempPassword,
+      options: {
+        emailRedirectTo: window.location.origin + '/signup',
+      },
+    });
+
+    if (error) {
+      // 이미 가입된 이메일인 경우
+      if (error.message.includes('already registered') || error.message.includes('already been registered')) {
+        setErrorMsg('이미 가입된 이메일입니다. 로그인해주세요.');
+      } else {
+        setErrorMsg('인증 메일 발송 실패: ' + error.message);
+      }
+      setIsSending(false);
+      return;
+    }
+
+    setIsEmailSent(true);
+    setIsSending(false);
   };
 
-  const handleVerifyCode = async () => {
-    // 실제 토큰 검증은 백엔드에서 처리
-    // 여기서는 6자리 입력 여부만 확인하고 verify-email API 호출
-    if (verificationCode.length !== 6) { setErrorMsg('인증번호 6자리를 입력하세요.'); return; }
-    try {
-      const { verifyEmail } = await import('../../api/auth');
-      await verifyEmail(verificationCode);
-      setIsVerified(true);
-      setErrorMsg('');
-    } catch {
-      setErrorMsg('인증번호가 올바르지 않습니다.');
-    }
-  };
-
-  const handleSignup = async (e: React.FormEvent) => {
+  // ─── Step 2: 가입 완료 (updateUser) ────────────────────────────────────────
+  const handleCompleteSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!isVerified) { setErrorMsg('인증메일 전송 버튼을 눌러주세요.'); return; }
+    if (!isEmailVerified) {
+      setErrorMsg('이메일 인증을 먼저 완료해주세요.');
+      return;
+    }
+    if (password.length < 8) { setErrorMsg('비밀번호는 8자 이상이어야 합니다.'); return; }
     if (password !== confirmPassword) { setErrorMsg('비밀번호가 일치하지 않습니다.'); return; }
     if (!agreeService || !agreePrivacy || !agreeDeposit) {
       setErrorMsg('필수 약관에 모두 동의해주세요.');
       return;
     }
-    if (emailDup === 'taken' || nicknameDup === 'taken' || phoneDup === 'taken') {
+    if (nicknameDup === 'taken' || phoneDup === 'taken') {
       setErrorMsg('중복된 정보가 있습니다. 확인해주세요.');
       return;
     }
 
     setIsSubmitting(true);
-    try {
-      await register({
+
+    // 진짜 비밀번호 + user_metadata 업데이트
+    const { error } = await supabase.auth.updateUser({
+      password,
+      data: {
         real_name: name,
-        email,
-        phone,
         nickname,
-        password,
-        agreements: { service: agreeService, privacy: agreePrivacy, deposit: agreeDeposit },
-      });
-      navigate('/login', { state: { registered: true } });
-    } catch (err) {
-      const axiosErr = err as AxiosError<ApiError>;
-      setErrorMsg(axiosErr.response?.data?.error?.message ?? '회원가입에 실패했습니다.');
-    } finally {
+        phone,
+      },
+    });
+
+    if (error) {
+      setErrorMsg('가입 완료 실패: ' + error.message);
       setIsSubmitting(false);
+      return;
     }
+
+    // 로그아웃 (가입 완료 후 깨끗한 상태에서 로그인하도록)
+    await supabase.auth.signOut();
+
+    setSuccessMsg('회원가입이 완료되었습니다!');
+    setTimeout(() => navigate('/login'), 2000);
   };
 
+  // ─── 중복 체크 라벨 ────────────────────────────────────────────────────────
   const dupLabel = (state: DuplicateState) => {
     if (state === 'checking') return <span className="text-xs text-gray-400">확인 중...</span>;
     if (state === 'available') return <span className="text-xs text-green-600">사용 가능합니다.</span>;
@@ -114,6 +169,22 @@ export default function Signup() {
     return null;
   };
 
+  // ─── 성공 화면 ─────────────────────────────────────────────────────────────
+  if (successMsg) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-4">
+        <div className="w-full max-w-md text-center">
+          <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-6">
+            <span className="text-4xl">✅</span>
+          </div>
+          <h1 className="text-2xl font-bold mb-4">{successMsg}</h1>
+          <p className="text-gray-500 text-sm">잠시 후 로그인 페이지로 이동합니다...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 메인 렌더링 ──────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-white flex items-center justify-center p-4">
       <div className="absolute top-0 left-0 right-0 p-8">
@@ -132,110 +203,135 @@ export default function Signup() {
           <h2 className="text-3xl font-bold mb-3">하루만 해보자</h2>
         </div>
 
-        <form onSubmit={handleSignup} className="space-y-5">
-          {/* 이름 */}
+        {/* ═══════════════ Step 1: 이메일 인증 ═══════════════ */}
+        <div className={`space-y-5 ${step === 2 ? 'opacity-50 pointer-events-none' : ''}`}>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">이름</label>
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="이름을 입력하세요."
-              className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-              required />
-          </div>
-
-          {/* 닉네임 */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">닉네임</label>
-            <input type="text" value={nickname}
-              onChange={(e) => { setNickname(e.target.value); debounceCheck('nickname', e.target.value, setNicknameDup); }}
-              placeholder="닉네임을 입력하세요."
-              className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-              required />
-            {dupLabel(nicknameDup)}
-          </div>
-
-          {/* 전화번호 */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">전화번호</label>
-            <input type="tel" value={phone}
-              onChange={(e) => { setPhone(e.target.value); debounceCheck('phone', e.target.value, setPhoneDup); }}
-              placeholder="010-0000-0000"
-              className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-              required />
-            {dupLabel(phoneDup)}
-          </div>
-
-          {/* 이메일 */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">이메일 (아이디)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              이메일 (아이디)
+              {isEmailVerified && <span className="ml-2 text-green-600 text-xs">✓ 인증완료</span>}
+            </label>
             <div className="flex gap-2">
-              <input type="email" value={email}
-                onChange={(e) => { setEmail(e.target.value); debounceCheck('email', e.target.value, setEmailDup); }}
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="이메일 주소를 입력하세요."
                 className="flex-1 px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-                required disabled={isVerified} />
-              <button type="button" onClick={handleSendCode} disabled={isVerified}
-                className="px-4 py-4 bg-gray-900 hover:bg-gray-800 text-white rounded-xl text-sm font-medium transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed whitespace-nowrap">
-                {isVerified ? '발송완료' : '인증메일 전송'}
+                required
+                disabled={isEmailSent || isEmailVerified}
+              />
+              <button
+                type="button"
+                onClick={handleSendVerification}
+                disabled={isSending || isEmailSent || isEmailVerified}
+                className="px-4 py-4 bg-gray-900 hover:bg-gray-800 text-white rounded-xl text-sm font-medium transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                {isEmailVerified ? '✓ 인증완료' : isSending ? '발송 중...' : '인증메일 전송'}
               </button>
             </div>
-            {dupLabel(emailDup)}
             <p className="text-xs text-gray-500 mt-1">이메일이 로그인 아이디로 사용됩니다.</p>
           </div>
 
-          {/* 인증메일 발송 안내 */}
-          {isCodeSent && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-              <p className="text-sm text-blue-700">
-                📧 인증 링크가 포함된 메일을 발송했습니다. 회원가입 완료 후 메일함에서 링크를 클릭해주세요.
+          {/* 인증 대기 안내 */}
+          {isEmailSent && !isEmailVerified && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
+              <p className="text-sm text-yellow-700">
+                📧 <strong>{email}</strong>로 인증 링크를 발송했습니다.
+              </p>
+              <p className="text-xs text-yellow-600 mt-1">
+                메일함에서 링크를 클릭하면 자동으로 다음 단계로 넘어갑니다.
               </p>
             </div>
           )}
+        </div>
 
-          {/* 비밀번호 */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">비밀번호</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              placeholder="비밀번호를 입력하세요." minLength={8}
-              className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-              required />
-            <p className="text-xs text-gray-500 mt-1">8자 이상 입력하세요.</p>
-          </div>
+        {/* ═══════════════ Step 2: 나머지 정보 입력 ═══════════════ */}
+        {step === 2 && (
+          <form onSubmit={handleCompleteSignup} className="space-y-5 mt-6 pt-6 border-t border-gray-200">
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4">
+              <p className="text-sm text-green-700">✅ 이메일 인증 완료! 나머지 정보를 입력해주세요.</p>
+            </div>
 
-          {/* 비밀번호 확인 */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">비밀번호 확인</label>
-            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="비밀번호를 다시 입력하세요."
-              className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
-              required />
-            {confirmPassword && password !== confirmPassword && (
-              <p className="text-xs text-red-500 mt-1">비밀번호가 일치하지 않습니다.</p>
-            )}
-          </div>
+            {/* 이름 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">이름</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)}
+                placeholder="이름을 입력하세요."
+                className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+                required />
+            </div>
 
-          {/* 약관 동의 */}
-          <div className="space-y-2 pt-2">
-            <p className="text-sm font-medium text-gray-700">필수 약관 동의</p>
-            {[
-              { label: '서비스 이용약관 동의 (필수)', value: agreeService, setter: setAgreeService },
-              { label: '개인정보처리방침 동의 (필수)', value: agreePrivacy, setter: setAgreePrivacy },
-              { label: '보증금 차감 정책 동의 (필수)', value: agreeDeposit, setter: setAgreeDeposit },
-            ].map(({ label, value, setter }) => (
-              <label key={label} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={value} onChange={(e) => setter(e.target.checked)}
-                  className="w-4 h-4 accent-blue-600" />
-                <span className="text-sm text-gray-700">{label}</span>
-              </label>
-            ))}
-          </div>
+            {/* 닉네임 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">닉네임</label>
+              <input type="text" value={nickname}
+                onChange={(e) => { setNickname(e.target.value); debounceCheck('nickname', e.target.value, setNicknameDup); }}
+                placeholder="닉네임을 입력하세요."
+                className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+                required />
+              {dupLabel(nicknameDup)}
+            </div>
 
-          {errorMsg && <p className="text-sm text-red-500 text-center">{errorMsg}</p>}
+            {/* 전화번호 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">전화번호</label>
+              <input type="tel" value={phone}
+                onChange={(e) => { setPhone(e.target.value); debounceCheck('phone', e.target.value, setPhoneDup); }}
+                placeholder="010-0000-0000"
+                className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+                required />
+              {dupLabel(phoneDup)}
+            </div>
 
-          <button type="submit" disabled={isSubmitting}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white py-4 rounded-xl font-medium transition-colors mt-6">
-            {isSubmitting ? '가입 중...' : '가입하기'}
-          </button>
-        </form>
+            {/* 비밀번호 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">비밀번호</label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                placeholder="비밀번호를 입력하세요." minLength={8}
+                className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+                required />
+              <p className="text-xs text-gray-500 mt-1">8자 이상 입력하세요.</p>
+            </div>
+
+            {/* 비밀번호 확인 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">비밀번호 확인</label>
+              <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="비밀번호를 다시 입력하세요."
+                className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+                required />
+              {confirmPassword && password !== confirmPassword && (
+                <p className="text-xs text-red-500 mt-1">비밀번호가 일치하지 않습니다.</p>
+              )}
+            </div>
+
+            {/* 약관 동의 */}
+            <div className="space-y-2 pt-2">
+              <p className="text-sm font-medium text-gray-700">필수 약관 동의</p>
+              {[
+                { label: '서비스 이용약관 동의 (필수)', value: agreeService, setter: setAgreeService },
+                { label: '개인정보처리방침 동의 (필수)', value: agreePrivacy, setter: setAgreePrivacy },
+                { label: '보증금 차감 정책 동의 (필수)', value: agreeDeposit, setter: setAgreeDeposit },
+              ].map(({ label, value, setter }) => (
+                <label key={label} className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={value} onChange={(e) => setter(e.target.checked)}
+                    className="w-4 h-4 accent-blue-600" />
+                  <span className="text-sm text-gray-700">{label}</span>
+                </label>
+              ))}
+            </div>
+
+            {errorMsg && <p className="text-sm text-red-500 text-center">{errorMsg}</p>}
+
+            <button type="submit" disabled={isSubmitting}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white py-4 rounded-xl font-medium transition-colors">
+              {isSubmitting ? '가입 완료 중...' : '가입 완료'}
+            </button>
+          </form>
+        )}
+
+        {/* Step 1에서 에러 표시 */}
+        {step === 1 && errorMsg && <p className="text-sm text-red-500 text-center mt-4">{errorMsg}</p>}
 
         <div className="mt-8 text-center">
           <span className="text-sm text-gray-600">이미 계정이 있으신가요? </span>
