@@ -52,6 +52,7 @@ export default function Signup() {
     try {
       await resendVerification(email);
       setIsCodeSent(true);
+      setIsVerified(true); // Supabase Auth 링크 방식이므로 메일 발송 = 인증 대기 상태
       setErrorMsg('');
     } catch {
       setErrorMsg('인증 이메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.');
@@ -76,7 +77,7 @@ export default function Signup() {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!isVerified) { setErrorMsg('이메일 인증을 완료해주세요.'); return; }
+    if (!isVerified) { setErrorMsg('인증메일 전송 버튼을 눌러주세요.'); return; }
     if (password !== confirmPassword) { setErrorMsg('비밀번호가 일치하지 않습니다.'); return; }
     if (!agreeService || !agreePrivacy || !agreeDeposit) {
       setErrorMsg('필수 약관에 모두 동의해주세요.');
@@ -174,27 +175,19 @@ export default function Signup() {
                 required disabled={isVerified} />
               <button type="button" onClick={handleSendCode} disabled={isVerified}
                 className="px-4 py-4 bg-gray-900 hover:bg-gray-800 text-white rounded-xl text-sm font-medium transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed whitespace-nowrap">
-                {isVerified ? '인증완료' : isCodeSent ? '재전송' : '인증번호 받기'}
+                {isVerified ? '발송완료' : '인증메일 전송'}
               </button>
             </div>
             {dupLabel(emailDup)}
             <p className="text-xs text-gray-500 mt-1">이메일이 로그인 아이디로 사용됩니다.</p>
           </div>
 
-          {/* 인증번호 */}
-          {isCodeSent && !isVerified && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">인증번호</label>
-              <div className="flex gap-2">
-                <input type="text" value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value)}
-                  placeholder="인증번호 6자리" maxLength={6}
-                  className="flex-1 px-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:bg-white transition-colors" />
-                <button type="button" onClick={handleVerifyCode}
-                  className="px-4 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium transition-colors whitespace-nowrap">
-                  인증확인
-                </button>
-              </div>
+          {/* 인증메일 발송 안내 */}
+          {isCodeSent && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <p className="text-sm text-blue-700">
+                📧 인증 링크가 포함된 메일을 발송했습니다. 회원가입 완료 후 메일함에서 링크를 클릭해주세요.
+              </p>
             </div>
           )}
 

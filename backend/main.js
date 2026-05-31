@@ -50,6 +50,31 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ─── 인증 메일 재발송 (Supabase Auth resend) ─────────────────────────────────
+app.post('/auth/resend-verification', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(422).json({
+      error: { code: 'VALIDATION_ERROR', message: '이메일을 입력해주세요.' },
+    });
+  }
+
+  const { error } = await supabase.auth.resend({
+    type: 'signup',
+    email,
+  });
+
+  if (error) {
+    console.error('인증 메일 발송 실패:', error.message);
+    return res.status(400).json({
+      error: { code: 'AUTH_ERROR', message: error.message },
+    });
+  }
+
+  res.json({ message: '인증 메일이 발송되었습니다. 메일함을 확인해주세요.' });
+});
+
 // ─── 중복 확인 (닉네임/이메일/전화번호) ──────────────────────────────────────
 app.get('/auth/check-duplicate', async (req, res) => {
   const { field, value } = req.query;
