@@ -24,7 +24,7 @@ export interface UpdateProfileRequest {
 
 /** 내 프로필 조회 */
 export async function getMyProfile(): Promise<UserProfile> {
-  const res = await apiClient.get<{ user: UserProfile }>('/users/me');
+  const res = await apiClient.get<{ user: UserProfile }>('/auth/me');
   return res.data.user;
 }
 
