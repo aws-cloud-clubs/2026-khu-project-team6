@@ -1,4 +1,4 @@
-import { Search, Heart, Menu, Send, ChevronRight } from 'lucide-react';
+import { Search, Heart, Menu, Send, ChevronRight, Loader2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +16,7 @@ export default function MainApp() {
     text: '필요한 물품을 추천받아 보세요!'
   }
 ]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: number]: boolean }>({});
   const [activeCategory, setActiveCategory] = useState('콘서트');
 
@@ -122,49 +123,47 @@ export default function MainApp() {
 
 
   const handleAIChat = async () => {
-  if (!chatInput.trim()) {
-    alert('메시지를 입력해주세요.');
-    return;
-  }
+    if (!chatInput.trim() || isChatLoading) return;
 
-  const userMessage = chatInput;
+    const userMessage = chatInput.trim();
 
-  try {
-    const result = await sendAIChat(userMessage);
-
-    const newChecked = { ...checkedItems };
-
-currentChecklistItems.forEach(item => {
-  const matched = result.suggestedItemTypes?.some(
-    (suggested: string) =>
-      item.title.includes(suggested) ||
-      suggested.includes(item.title)
-  );
-
-  if (matched) {
-    newChecked[item.id] = true;
-  }
-});
-
-setCheckedItems(newChecked);
-    setChatMessages(prev => [
-      ...prev,
-      {
-        sender: 'user',
-        text: userMessage
-      },
-      {
-        sender: 'ai',
-        text: result.reply
-      }
-    ]);
-
+    // 1. 낙관적 UI: 유저 메시지를 즉시 화면에 렌더링 + input 즉시 비우기
+    setChatMessages(prev => [...prev, { sender: 'user', text: userMessage }]);
     setChat('');
-  } catch (error) {
-    console.error('AI 호출 실패:', error);
-    alert('AI 호출 실패');
-  }
-};
+
+    // 2. 로딩 상태 ON → "AI가 생각 중입니다..." 말풍선 표시
+    setIsChatLoading(true);
+
+    try {
+      // 3. 비동기 대기: 백엔드 API 응답 기다리기
+      const result = await sendAIChat(userMessage);
+
+      // 체크박스 자동 선택
+      const newChecked = { ...checkedItems };
+      currentChecklistItems.forEach(item => {
+        const matched = result.suggestedItemTypes?.some(
+          (suggested: string) =>
+            item.title.includes(suggested) || suggested.includes(item.title)
+        );
+        if (matched) {
+          newChecked[item.id] = true;
+        }
+      });
+      setCheckedItems(newChecked);
+
+      // AI 답변 말풍선 추가
+      setChatMessages(prev => [...prev, { sender: 'ai', text: result.reply }]);
+    } catch (error) {
+      console.error('AI 호출 실패:', error);
+      setChatMessages(prev => [
+        ...prev,
+        { sender: 'ai', text: 'AI 추천을 불러올 수 없습니다. 잠시 후 다시 시도해주세요.' },
+      ]);
+    } finally {
+      // 4. 로딩 상태 OFF
+      setIsChatLoading(false);
+    }
+  };
 
   
   
@@ -323,6 +322,14 @@ setCheckedItems(newChecked);
         </div>
       </div>
     ))}
+    {isChatLoading && (
+      <div className="flex justify-start">
+        <div className="bg-gray-100 rounded-xl px-3 py-2 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+          <span className="text-sm text-gray-500">AI가 생각 중입니다...</span>
+        </div>
+      </div>
+    )}
   </div>
 </div>
 
@@ -332,14 +339,17 @@ setCheckedItems(newChecked);
               type="text"
               value={chatInput}
               onChange={(e) => setChat(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAIChat(); } }}
               placeholder="무엇이 궁금하신가요?"
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400"
+              disabled={isChatLoading}
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400 disabled:opacity-50"
             />
             <button
               onClick={handleAIChat}
-              className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-lg transition-colors"
->
-            <Send className="w-4 h-4" />
+              disabled={isChatLoading || !chatInput.trim()}
+              className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Send className="w-4 h-4" />
             </button>
           </div>
         </div>
