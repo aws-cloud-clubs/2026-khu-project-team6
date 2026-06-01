@@ -321,6 +321,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
 - `NODE_ENV=test` 환경에서는 모든 외부 서비스(SES, Bedrock, SMS)를 mock으로 대체합니다.
 - 체크포인트는 단계별 점진적 검증을 보장합니다.
 - 보증금 계산 로직(`calculateDepositRefund`)은 프로퍼티 테스트로 수학적 불변식을 검증합니다.
+- **⚠️ 중요: 상품 데이터는 `items` 테이블이 아닌 `products` 테이블에 저장되어 있음.** 상품 관련 CRUD(등록/조회/수정/삭제)는 반드시 `products` 테이블을 대상으로 해야 함. 컬럼: `id`, `title`, `description`, `category`(문자열), `subcategory`(문자열), `price`(숫자), `deposit`, `trade_type`, `image_url`, `owner_id`, `created_at`.
 
 ## Task Dependency Graph
 

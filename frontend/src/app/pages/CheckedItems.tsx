@@ -23,12 +23,19 @@ export default function CheckedItems() {
     if (!category) return;
 
     setLoading(true);
+
+    // 카테고리 필터는 항상 적용, 선택된 아이템이 있으면 subcategory도 필터
+    const params: Record<string, string> = { category };
+    if (selectedItem && selectedItem.title) {
+      params.subcategory = selectedItem.title;
+    }
+
     apiClient
-      .get<{ items: RentalProduct[] }>('/items', { params: { category } })
+      .get<{ items: RentalProduct[] }>('/items', { params })
       .then((res) => setRentalProducts(res.data.items || []))
       .catch(() => setRentalProducts([]))
       .finally(() => setLoading(false));
-  }, [category]);
+  }, [category, selectedItem]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
