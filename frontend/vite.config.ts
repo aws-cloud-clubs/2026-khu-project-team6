@@ -32,7 +32,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // /api, /auth, /health 등 백엔드 요청을 localhost:4000으로 프록시
+      // /api로 시작하는 모든 요청을 localhost:4000으로 프록시 (접두사 제거)
       '/api': {
         target: 'http://localhost:4000',
         changeOrigin: true,
@@ -43,6 +43,26 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/health': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/chat': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/notifications': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/items': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/cards': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/ai': {
         target: 'http://localhost:4000',
         changeOrigin: true,
       },

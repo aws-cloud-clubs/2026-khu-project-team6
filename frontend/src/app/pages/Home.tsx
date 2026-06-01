@@ -4,6 +4,17 @@ import { ImageWithFallback } from '../components/ImageWithFallback';
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { useAuth } from '../../context/AuthContext';
+import apiClient from '../../api/client';
+
+interface Product {
+  id: string;
+  title: string;
+  price: string;
+  image: string;
+  tradeMethod: string;
+  category: string;
+  subcategory: string;
+}
 
 const experienceImages = [
   {
@@ -62,6 +73,19 @@ export default function Home() {
   useEffect(() => {
     // TODO: 백엔드 API에서 인기 카테고리를 가져오도록 연동
     setCategories([]);
+  }, []);
+
+  // 전체 상품 최신순 조회
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+
+  useEffect(() => {
+    setProductsLoading(true);
+    apiClient
+      .get('/items')
+      .then((res) => setProducts(res.data.items || []))
+      .catch(() => setProducts([]))
+      .finally(() => setProductsLoading(false));
   }, []);
 
   return (
@@ -236,6 +260,66 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* 전체 상품 최신순 리스트 */}
+      <div className="px-8 py-10 bg-white">
+        <div className="max-w-7xl mx-auto">
+          <div className="mb-6">
+            <h2 className="text-lg font-bold text-gray-900">최근 등록된 대여 상품</h2>
+            <p className="text-sm text-gray-500 mt-1">새로 올라온 상품을 둘러보세요</p>
+          </div>
+
+          {productsLoading ? (
+            <div className="text-center py-12 text-gray-400">상품을 불러오는 중...</div>
+          ) : products.length > 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+              {products.map((product) => (
+                <div
+                  key={product.id}
+                  onClick={() => navigate(`/product/${product.id}`, { state: { product } })}
+                  className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-md transition-shadow cursor-pointer group"
+                >
+                  <div className="relative aspect-square bg-gray-100">
+                    {product.image ? (
+                      <ImageWithFallback
+                        src={product.image}
+                        alt={product.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs">
+                        이미지 없음
+                      </div>
+                    )}
+                    <div className="absolute top-2 left-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/90 text-gray-700 shadow-sm">
+                        {product.category}
+                      </span>
+                    </div>
+                    <div className="absolute top-2 right-2">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                        product.tradeMethod === '픽업존'
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-green-500 text-white'
+                      }`}>
+                        {product.tradeMethod}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    <div className="text-sm font-bold text-gray-900 mb-1 line-clamp-1">{product.title}</div>
+                    <div className="text-sm text-purple-600 font-semibold">{product.price}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 text-gray-400">
+              <p>등록된 상품이 없습니다.</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

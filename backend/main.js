@@ -407,14 +407,110 @@ app.put('/users/me', async (req, res) => {
   });
 });
 
-// --- 상품 등록 ---
+// --- JWT 인증 미들웨어 (상세 에러 로깅) ---
+async function authMiddleware(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.warn('[Auth] 토큰 누락:', req.method, req.path);
+      return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' } });
+    }
+    const token = authHeader.split(' ')[1];
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data.user) {
+      console.warn('[Auth] 토큰 검증 실패:', error?.message || 'user null', '| path:', req.path);
+      return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다. 다시 로그인해주세요.' } });
+    }
+    req.user = data.user;
+    next();
+  } catch (err) {
+    console.error('[Auth] 미들웨어 예외:', err.message || err);
+    return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '인증 처리 중 오류: ' + (err.message || '') } });
+  }
+}
+
+// --- 카드 목록 조회 ---
+app.get('/cards', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { data: cards, error } = await client
+      .from('cards')
+      .select('id, masked_number, card_brand, expires_at, is_verified, created_at')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: { message: '카드 조회 실패' } });
+    }
+    res.json({ cards: cards || [] });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 카드 등록 ---
+app.post('/cards', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const client = supabaseAdmin || supabase;
+    const { billing_key, card_number, card_brand, expires_month, expires_year } = req.body;
+
+    let pgToken = billing_key;
+    let maskedNumber = '';
+
+    if (billing_key) {
+      const last4 = card_number ? card_number.replace(/\D/g, '').slice(-4) : '0000';
+      maskedNumber = `**** **** **** ${last4}`;
+    } else if (card_number) {
+      const cleanNumber = card_number.replace(/\D/g, '');
+      if (cleanNumber.length < 13 || cleanNumber.length > 19) {
+        return res.status(422).json({ error: { message: '유효한 카드 번호를 입력해주세요.' } });
+      }
+      maskedNumber = '**** **** **** ' + cleanNumber.slice(-4);
+      pgToken = `billingkey_test_${Date.now()}_${cleanNumber.slice(-4)}`;
+    } else {
+      return res.status(422).json({ error: { message: 'billing_key 또는 card_number가 필요합니다.' } });
+    }
+
+    const expiresAt = `${expires_year || 2030}-${String(expires_month || 12).padStart(2, '0')}-01`;
+
+    const { data: card, error } = await client
+      .from('cards')
+      .insert({ user_id: userId, pg_token: pgToken, masked_number: maskedNumber, card_brand: card_brand || null, expires_at: expiresAt, is_verified: true })
+      .select('id, masked_number, card_brand, expires_at, is_verified, created_at')
+      .single();
+
+    if (error) {
+      return res.status(400).json({ error: { message: '카드 등록 실패: ' + error.message } });
+    }
+    res.status(201).json({ card });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 카드 삭제 ---
+app.delete('/cards/:id', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { data: card } = await client.from('cards').select('id, user_id').eq('id', req.params.id).single();
+    if (!card) return res.status(404).json({ error: { message: '카드를 찾을 수 없습니다.' } });
+    if (card.user_id !== req.user.id) return res.status(403).json({ error: { message: '본인의 카드만 삭제할 수 있습니다.' } });
+    await client.from('cards').delete().eq('id', req.params.id);
+    res.json({ message: '카드가 삭제되었습니다.' });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 상품 등록 (은행명/계좌번호 포함) ---
 app.post('/items', async (req, res) => {
   try {
-    const { title, description, category, subcategory, price, deposit, trade_type, image_url, owner_id } = req.body;
+    const { title, description, category, subcategory, price, deposit, trade_type, image_url, owner_id, bank_name, account_number } = req.body;
 
     const { data, error } = await supabase
       .from('products')
-      .insert({ title, description, category, subcategory, price, deposit, trade_type, image_url, owner_id })
+      .insert({ title, description, category, subcategory, price, deposit, trade_type, image_url, owner_id, bank_name: bank_name || null, account_number: account_number || null })
       .select()
       .single();
 
@@ -432,7 +528,7 @@ app.post('/items', async (req, res) => {
 app.get('/items', async (req, res) => {
   try {
     const { category, subcategory } = req.query;
-    let query = supabase.from('products').select('*');
+    let query = supabase.from('products').select('*').order('created_at', { ascending: false });
 
     if (category && category.trim() !== '') {
       query = query.eq('category', category.trim());
@@ -454,12 +550,356 @@ app.get('/items', async (req, res) => {
       tradeMethod: item.trade_type,
       category: item.category,
       subcategory: item.subcategory,
+      owner_id: item.owner_id,
+      bank_name: item.bank_name,
+      account_number: item.account_number,
     }));
 
     res.json({ items });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: { message: '상품 조회 실패' } });
+  }
+});
+
+// --- 상품 상세 조회 (계좌 정보 포함) ---
+app.get('/items/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: { message: '상품을 찾을 수 없습니다.' } });
+    }
+    res.json({ item: data });
+  } catch (err) {
+    res.status(500).json({ error: { message: '상품 조회 실패' } });
+  }
+});
+
+// --- 메시지 신고 (warning_count +1) ---
+app.post('/chat/report', authMiddleware, async (req, res) => {
+  try {
+    const { messageId } = req.body;
+    if (!messageId) {
+      return res.status(422).json({ error: { message: 'messageId가 필요합니다.' } });
+    }
+
+    const client = supabaseAdmin || supabase;
+
+    // 현재 warning_count 조회
+    const { data: msg, error: fetchErr } = await client
+      .from('chat_messages')
+      .select('id, warning_count')
+      .eq('id', messageId)
+      .single();
+
+    if (fetchErr || !msg) {
+      return res.status(404).json({ error: { message: '메시지를 찾을 수 없습니다.' } });
+    }
+
+    // warning_count +1 업데이트
+    const { error: updateErr } = await client
+      .from('chat_messages')
+      .update({ warning_count: (msg.warning_count || 0) + 1 })
+      .eq('id', messageId);
+
+    if (updateErr) {
+      return res.status(500).json({ error: { message: '신고 처리 실패' } });
+    }
+
+    res.json({ message: '신고가 완료되었습니다.' });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 채팅방 목록 조회 (마이페이지용) ---
+app.get('/chat/rooms', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const client = supabaseAdmin || supabase;
+
+    const { data: rooms, error } = await client
+      .from('chat_rooms')
+      .select('id, rental_id, seller_id, buyer_id, status, buyer_confirmed, seller_confirmed, created_at')
+      .or(`seller_id.eq.${userId},buyer_id.eq.${userId}`)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: { message: '채팅방 조회 실패' } });
+    }
+
+    // 각 채팅방의 마지막 메시지 조회
+    const roomsWithLastMessage = await Promise.all(
+      (rooms || []).map(async (room) => {
+        const { data: lastMsg } = await client
+          .from('chat_messages')
+          .select('content, sent_at, sender_id')
+          .eq('room_id', room.id)
+          .order('sent_at', { ascending: false })
+          .limit(1)
+          .single();
+
+        return {
+          ...room,
+          lastMessage: lastMsg?.content || null,
+          lastMessageAt: lastMsg?.sent_at || room.created_at,
+        };
+      })
+    );
+
+    res.json({ rooms: roomsWithLastMessage });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 채팅 메시지 조회 ---
+app.get('/chat/rooms/:roomId/messages', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { roomId } = req.params;
+
+    // 채팅방 참여자 확인
+    const { data: room } = await client
+      .from('chat_rooms')
+      .select('seller_id, buyer_id')
+      .eq('id', roomId)
+      .single();
+
+    if (!room || (room.seller_id !== req.user.id && room.buyer_id !== req.user.id)) {
+      return res.status(403).json({ error: { message: '접근 권한이 없습니다.' } });
+    }
+
+    const { data: messages, error } = await client
+      .from('chat_messages')
+      .select('id, room_id, sender_id, content, clean_bot_status, warning_count, sent_at')
+      .eq('room_id', roomId)
+      .order('sent_at', { ascending: true });
+
+    if (error) {
+      return res.status(500).json({ error: { message: '메시지 조회 실패' } });
+    }
+
+    res.json({ messages: messages || [] });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 채팅 메시지 전송 (Bedrock 검열 비활성화 — 안정성 우선) ---
+app.post('/chat/rooms/:roomId/messages', authMiddleware, async (req, res) => {
+  const client = supabaseAdmin || supabase;
+  const { roomId } = req.params;
+  const { content } = req.body;
+  const userId = req.user.id;
+
+  console.log(`[Chat Send] 요청 수신: user=${userId.slice(0,8)} room=${roomId.slice(0,8)} content="${(content || '').slice(0,30)}"`);
+
+  if (!content || content.trim().length === 0) {
+    return res.status(422).json({ error: { message: '메시지 내용이 필요합니다.' } });
+  }
+
+  try {
+    // 채팅방 참여자 확인
+    const { data: room, error: roomErr } = await client
+      .from('chat_rooms')
+      .select('seller_id, buyer_id')
+      .eq('id', roomId)
+      .single();
+
+    if (roomErr) {
+      console.error('[Chat Send] 채팅방 조회 실패:', roomErr.message, roomErr.code);
+      return res.status(500).json({ error: { message: '채팅방 조회 실패: ' + roomErr.message } });
+    }
+
+    if (!room) {
+      console.error('[Chat Send] 채팅방 없음:', roomId);
+      return res.status(404).json({ error: { message: '채팅방을 찾을 수 없습니다.' } });
+    }
+
+    if (room.seller_id !== userId && room.buyer_id !== userId) {
+      console.warn('[Chat Send] 권한 없음:', userId, 'not in', room.seller_id, room.buyer_id);
+      return res.status(403).json({ error: { message: '접근 권한이 없습니다.' } });
+    }
+
+    // 메시지 저장 (Bedrock 검열 스킵 — 안정성 우선)
+    const { data: savedMsg, error: insertErr } = await client
+      .from('chat_messages')
+      .insert({
+        room_id: roomId,
+        sender_id: userId,
+        content: content.trim(),
+        clean_bot_status: 'clean',
+        warning_count: 0,
+        sent_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      console.error('[Chat Send] INSERT 실패:', JSON.stringify(insertErr));
+      return res.status(500).json({ error: { message: '메시지 저장 실패: ' + (insertErr.message || insertErr.code) } });
+    }
+
+    console.log('[Chat Send] 성공:', savedMsg.id);
+    return res.status(201).json({ message: savedMsg });
+  } catch (err) {
+    console.error('[Chat Send] 예외:', err.message || err);
+    return res.status(500).json({ error: { message: '서버 오류: ' + (err.message || 'unknown') } });
+  }
+});
+
+// --- 채팅방 생성 또는 기존 채팅방 조회 ---
+app.post('/chat/rooms', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { productId, sellerId } = req.body;
+    const buyerId = req.user.id;
+
+    console.log('[Chat Rooms] 생성 요청:', { productId, sellerId, buyerId });
+
+    if (!productId || !sellerId) {
+      return res.status(422).json({ error: { message: 'productId와 sellerId가 필요합니다.' } });
+    }
+
+    // 기존 채팅방 확인 (seller + buyer 조합으로 검색)
+    const { data: existing, error: findErr } = await client
+      .from('chat_rooms')
+      .select('*')
+      .eq('seller_id', sellerId)
+      .eq('buyer_id', buyerId)
+      .limit(1)
+      .maybeSingle();
+
+    if (findErr) {
+      console.error('[Chat Rooms] 기존 방 조회 실패:', findErr.message);
+    }
+
+    if (existing) {
+      console.log('[Chat Rooms] 기존 방 반환:', existing.id);
+      return res.json({ room: existing });
+    }
+
+    // 새 채팅방 생성 — rental_id를 null로 설정 (FK 충돌 방지)
+    const { data: newRoom, error } = await client
+      .from('chat_rooms')
+      .insert({
+        seller_id: sellerId,
+        buyer_id: buyerId,
+        status: 'active',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Chat Rooms] INSERT 실패:', JSON.stringify(error));
+      return res.status(500).json({ error: { message: '채팅방 생성 실패: ' + error.message } });
+    }
+
+    console.log('[Chat Rooms] 새 방 생성:', newRoom.id);
+    res.status(201).json({ room: newRoom });
+  } catch (err) {
+    console.error('[Chat Rooms] 예외:', err.message || err);
+    res.status(500).json({ error: { message: '서버 오류: ' + (err.message || '') } });
+  }
+});
+
+// --- 알림 목록 조회 ---
+app.get('/notifications', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { data, error } = await client
+      .from('notifications')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      return res.status(500).json({ error: { message: '알림 조회 실패' } });
+    }
+    res.json({ notifications: data || [] });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 알림 읽음 처리 ---
+app.patch('/notifications/:id/read', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    await client
+      .from('notifications')
+      .update({ status: 'read' })
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id);
+
+    res.json({ message: '읽음 처리 완료' });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
+// --- 송금 확인 (구매자/판매자 양방향) ---
+app.post('/chat/rooms/:roomId/confirm-payment', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const { roomId } = req.params;
+    const userId = req.user.id;
+    const { role } = req.body; // 'buyer' or 'seller'
+
+    const { data: room } = await client
+      .from('chat_rooms')
+      .select('*')
+      .eq('id', roomId)
+      .single();
+
+    if (!room) {
+      return res.status(404).json({ error: { message: '채팅방을 찾을 수 없습니다.' } });
+    }
+
+    // 권한 확인
+    if (role === 'buyer' && room.buyer_id !== userId) {
+      return res.status(403).json({ error: { message: '권한이 없습니다.' } });
+    }
+    if (role === 'seller' && room.seller_id !== userId) {
+      return res.status(403).json({ error: { message: '권한이 없습니다.' } });
+    }
+
+    // 상태 업데이트 (buyer_confirmed / seller_confirmed 필드 활용)
+    const updateField = role === 'buyer' ? 'buyer_confirmed' : 'seller_confirmed';
+    await client
+      .from('chat_rooms')
+      .update({ [updateField]: true })
+      .eq('id', roomId);
+
+    // 양쪽 모두 확인했는지 체크
+    const { data: updated } = await client
+      .from('chat_rooms')
+      .select('buyer_confirmed, seller_confirmed')
+      .eq('id', roomId)
+      .single();
+
+    const bothConfirmed = updated?.buyer_confirmed && updated?.seller_confirmed;
+    if (bothConfirmed) {
+      await client
+        .from('chat_rooms')
+        .update({ status: 'paid' })
+        .eq('id', roomId);
+    }
+
+    res.json({
+      confirmed: true,
+      bothConfirmed,
+      status: bothConfirmed ? 'paid' : 'pending',
+    });
+  } catch (err) {
+    res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
 

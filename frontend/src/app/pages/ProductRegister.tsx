@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 
 export default function ProductRegister() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [productName, setProductName] = useState('');
   const [category, setCategory] = useState('');
   const [subCategory, setSubCategory] = useState('');
@@ -12,6 +13,8 @@ export default function ProductRegister() {
   const [description, setDescription] = useState('');
   const [tradeMethod, setTradeMethod] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
   const [cardNumber, setCardNumber] = useState('');
   const [cardVerified, setCardVerified] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -132,7 +135,9 @@ const handleSubmit = async (e: React.FormEvent) => {
         deposit: 0,
         trade_type: tradeMethod,
         image_url: imagePreview,
-        owner_id: null,
+        owner_id: user?.id || null,
+        bank_name: bankName || null,
+        account_number: accountNumber || null,
       }),
     });
 
@@ -339,6 +344,33 @@ const handleSubmit = async (e: React.FormEvent) => {
               className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400 resize-none"
               required
             />
+          </div>
+
+          {/* Bank Info (직거래 송금용) */}
+          <div className="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-100">
+            <h3 className="text-sm font-bold text-blue-800 mb-3">💳 송금 수령 계좌 (직거래 시 필수)</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">은행명</label>
+                <input
+                  type="text"
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  placeholder="예: 카카오뱅크"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">계좌번호</label>
+                <input
+                  type="text"
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
+                  placeholder="예: 3333-12-3456789"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400"
+                />
+              </div>
+            </div>
           </div>
 
           {/* Divider */}

@@ -297,18 +297,80 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 프로필 수정, 카드 관리, 대여 내역(상태별 탭), Direct_Trade 채팅 버튼
     - _Requirements: 9.4, 9.5, 9.6, 9.7, 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [ ] 17. 통합 테스트 및 최종 연결
-  - [~] 17.1 통합 테스트 작성 (mock 사용)
+- [ ] 17. 직거래 채팅방 UX · 송금 프로세스 · 신고 기능 구현
+  - [ ] 17.1 DB 스키마 확장 (`infra/database/005_chat_payment_report.sql`)
+    - `products` 테이블에 `bank_name VARCHAR(50)`, `account_number VARCHAR(50)` 컬럼 추가
+    - `chat_rooms` 테이블에 `buyer_confirmed BOOLEAN DEFAULT FALSE`, `seller_confirmed BOOLEAN DEFAULT FALSE` 컬럼 추가
+    - `reports` 테이블 생성: `id`, `message_id`, `reporter_id`, `reported_user_id`, `reason`, `created_at`
+    - `notifications` 테이블 생성 (없으면): `id`, `user_id`, `type`, `content`, `status`, `created_at`
+
+  - [ ] 17.2 백엔드: 채팅방 생성/조회 API (`POST /chat/rooms`, `GET /chat/rooms`)
+    - 구매자가 [판매자에게 문의하기] 클릭 시 채팅방 생성 또는 기존 방 반환
+    - `GET /chat/rooms`: 로그인 유저가 참여 중인 모든 채팅방 + 마지막 메시지 최신순 반환
+
+  - [ ] 17.3 백엔드: 채팅 메시지 CRUD (`GET /chat/rooms/:roomId/messages`, `POST /chat/rooms/:roomId/messages`)
+    - 메시지 전송 시 AWS Bedrock Nova Lite 비속어 필터링 (BANNED/PASSED만 판정)
+    - modelId: `arn:aws:bedrock:ap-northeast-2::inference-profile/amazon.nova-lite-v1:0`, maxTokens=5, temperature=0.0
+    - BANNED 판정 시 메시지 전송 차단 + "부적절한 표현이 포함되어 전송할 수 없습니다." 응답
+    - 5초 타임아웃 시 메시지 통과 허용 + 실패 로그 기록
+
+  - [ ] 17.4 백엔드: 메시지 신고 API (`POST /chat/report`)
+    - 요청: `{ messageId, reason? }`
+    - `reports` 테이블에 `message_id`, `reporter_id`, `reported_user_id` 즉시 INSERT
+    - `chat_messages.warning_count` +1 업데이트
+    - 응답: "신고가 완료되었습니다."
+
+  - [ ] 17.5 백엔드: 송금 확인 API (`POST /chat/rooms/:roomId/confirm-payment`)
+    - 구매자 → [송금 완료] 클릭 시 `buyer_confirmed = true` 업데이트
+    - 판매자 → [입금 확인 완료] 클릭 시 `seller_confirmed = true` 업데이트
+    - 양쪽 모두 true → `chat_rooms.status = 'completed'` 자동 전환
+    - 응답에 `bothConfirmed` 플래그 포함
+
+  - [ ] 17.6 백엔드: 알림 API (`GET /notifications`, `PATCH /notifications/:id/read`)
+    - 로그인 유저의 알림 목록 최신순 50건 반환
+    - 개별 알림 읽음 처리 (`status = 'read'`)
+
+  - [ ] 17.7 프론트엔드: 상품 등록 페이지 — 은행명/계좌번호 입력 필드 추가
+    - 판매자가 상품 등록 시 `bank_name`, `account_number` 텍스트 입력
+    - `POST /items` 요청에 해당 필드 포함하여 전송
+    - `owner_id`에 로그인 유저 ID 자동 세팅
+
+  - [ ] 17.8 프론트엔드: 상품 상세 페이지 — 버튼 문구 동적 변환
+    - 로그인 유저 ID === `product.owner_id` → 버튼 텍스트 "구매자와 대화하기"
+    - 그 외 → "판매자에게 문의하기"
+    - 클릭 시 채팅방 생성/이동
+
+  - [ ] 17.9 프론트엔드: 채팅방 UI 전면 리뉴얼 (`Chat.tsx`)
+    - **진입 시**: 계좌 정보 비노출 상태, 메시지 목록 + 입력창만 표시
+    - **[구매하기] 버튼**: 구매자에게만 채팅방 상단에 노출
+    - **구매하기 클릭 후**: 판매자 계좌 정보(은행명 + 계좌번호) 패널 오픈 + [송금 완료] 버튼 활성화
+    - **판매자 측**: [입금 확인 완료] 버튼 노출
+    - **양쪽 확인 완료**: "거래 완료" 배지 표시, 버튼 비활성화
+    - **메시지 신고**: 각 말풍선 hover 시 [⚠ 신고] 아이콘 노출, 클릭 시 `POST /chat/report` 호출 + 토스트 "신고가 완료되었습니다."
+    - **비속어 차단 UX**: 전송 시도 후 BANNED 응답 수신 시 경고 스낵바 표시
+
+  - [ ] 17.10 프론트엔드: 마이페이지 — 알림함 + 채팅 내역 리스트
+    - **알림함**: `GET /notifications` 연동, 읽지 않은 알림 카운트 빨간 점 배지
+    - **채팅 내역**: `GET /chat/rooms` 연동, 마지막 메시지 + 시간 표시, 클릭 시 채팅방 이동
+
+  - [ ] 17.11 AI 클린봇 역할 축소 최적화 (`backend/src/chat/cleanbot.ts`)
+    - 시스템 프롬프트: "비속어·욕설이 포함되면 BANNED, 아니면 PASSED 한 단어만 출력."
+    - 장외거래 유도 감지 제거 (시스템 버튼으로 대체)
+    - maxTokens=5, temperature=0.0, 응답 trim 후 BANNED/PASSED만 판별
+
+- [ ] 18. 통합 테스트 및 최종 연결
+  - [~] 18.1 통합 테스트 작성 (mock 사용)
     - SES 이메일 발송 통합 테스트 (`tests/integration/ses.integration.test.ts`)
     - Bedrock AI 챗봇 통합 테스트 (`tests/integration/bedrock.integration.test.ts`)
     - WebSocket 연결·메시지 통합 테스트 (`tests/integration/websocket.integration.test.ts`)
+    - 채팅 송금 확인 플로우 통합 테스트 (`tests/integration/chat-payment.integration.test.ts`)
     - _Requirements: 14.5_
 
-  - [ ]* 17.2 스모크 테스트 작성
+  - [ ]* 18.2 스모크 테스트 작성
     - 스케줄러 실행 스모크 테스트 (`tests/smoke/scheduler.smoke.test.ts`)
     - _Requirements: 11.1_
 
-- [~] 18. 최종 Checkpoint — 전체 테스트 통과 확인
+- [~] 19. 최종 Checkpoint — 전체 테스트 통과 확인
   - 모든 단위·프로퍼티·통합 테스트가 통과하는지 확인하고, 문제가 있으면 사용자에게 질문하세요.
 
 ---
@@ -349,7 +411,11 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     { "id": 18, "tasks": ["16.2", "16.3"] },
     { "id": 19, "tasks": ["16.4", "16.5", "16.6"] },
     { "id": 20, "tasks": ["16.7", "16.8"] },
-    { "id": 21, "tasks": ["17.1", "17.2"] }
+    { "id": 21, "tasks": ["17.1"] },
+    { "id": 22, "tasks": ["17.2", "17.3", "17.4", "17.5", "17.6"] },
+    { "id": 23, "tasks": ["17.7", "17.8", "17.11"] },
+    { "id": 24, "tasks": ["17.9", "17.10"] },
+    { "id": 25, "tasks": ["18.1", "18.2"] }
   ]
 }
 ```
