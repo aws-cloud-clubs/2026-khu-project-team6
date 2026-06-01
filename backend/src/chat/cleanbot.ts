@@ -58,10 +58,10 @@ export async function analyzeMessage(content: string): Promise<CleanBotResult> {
     return mockAnalyzeMessage(content);
   }
 
-  const client = new BedrockRuntimeClient({ region: 'ap-northeast-2' });
+  const client = new BedrockRuntimeClient({ region: 'us-east-1' });
 
   const command = new InvokeModelCommand({
-    modelId: 'eu.amazon.nova-lite-v1:0',
+    modelId: 'us.amazon.nova-lite-v1:0',
     contentType: 'application/json',
     accept: 'application/json',
     body: JSON.stringify({
