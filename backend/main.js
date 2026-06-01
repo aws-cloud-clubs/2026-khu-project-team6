@@ -408,6 +408,55 @@ app.put('/users/me', async (req, res) => {
 });
 
 // --- 상품 등록 ---
+// ─── AI 챗봇 엔드포인트 ──────────────────────────────────────────────────────
+app.post('/ai/chat', async (req, res) => {
+  // JWT 인증 확인
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData.user) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다.' },
+    });
+  }
+
+  const { message } = req.body;
+
+  // 메시지 유효성 검사
+  if (!message || typeof message !== 'string' || message.trim().length === 0) {
+    return res.status(422).json({
+      error: { code: 'VALIDATION_ERROR', message: '메시지를 입력해주세요.' },
+    });
+  }
+
+  // 500자 초과 거부 (Requirements: 5.3)
+  if (message.length > 500) {
+    return res.status(422).json({
+      error: { code: 'VALIDATION_ERROR', message: '메시지는 500자를 초과할 수 없습니다.' },
+    });
+  }
+
+  try {
+    // AI 챗봇 처리 (Bedrock 또는 mock)
+    const { processAIChat } = require('./src/ai/chat');
+    const result = await processAIChat(message);
+    res.json(result);
+  } catch (error) {
+    console.error('AI 챗봇 오류:', error);
+    res.json({
+      reply: 'AI 추천을 불러올 수 없습니다. 잠시 후 다시 시도해주세요.',
+      suggestedItemTypes: [],
+    });
+  }
+});
+
+// ─── 상품 등록 ───────────────────────────────────────────────
 app.post('/items', async (req, res) => {
   try {
     const { title, description, category, subcategory, price, deposit, trade_type, image_url, owner_id } = req.body;
@@ -464,6 +513,99 @@ app.get('/items', async (req, res) => {
 });
 
 // --- 서버 시작 ---
+// ─── 채팅방 목록 조회 ────────────────────────────────────────────────────────
+app.get('/chat/rooms', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData.user) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다.' },
+    });
+  }
+
+  const userId = authData.user.id;
+  const client = supabaseAdmin || supabase;
+
+  // 사용자가 참여한 채팅방 조회 (seller 또는 buyer)
+  const { data: rooms, error } = await client
+    .from('chat_rooms')
+    .select('id, rental_id, seller_id, buyer_id, status, created_at')
+    .or(`seller_id.eq.${userId},buyer_id.eq.${userId}`)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return res.status(500).json({
+      error: { code: 'INTERNAL_ERROR', message: '채팅방 목록 조회에 실패했습니다.' },
+    });
+  }
+
+  res.json({ rooms: rooms || [] });
+});
+
+// ─── 채팅 메시지 조회 ────────────────────────────────────────────────────────
+app.get('/chat/rooms/:roomId/messages', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData.user) {
+    return res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다.' },
+    });
+  }
+
+  const userId = authData.user.id;
+  const { roomId } = req.params;
+  const client = supabaseAdmin || supabase;
+
+  // 채팅방 접근 권한 확인
+  const { data: room, error: roomError } = await client
+    .from('chat_rooms')
+    .select('id, seller_id, buyer_id')
+    .eq('id', roomId)
+    .single();
+
+  if (roomError || !room) {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: '채팅방을 찾을 수 없습니다.' },
+    });
+  }
+
+  if (room.seller_id !== userId && room.buyer_id !== userId) {
+    return res.status(403).json({
+      error: { code: 'FORBIDDEN', message: '채팅방 접근 권한이 없습니다.' },
+    });
+  }
+
+  // 메시지 조회
+  const { data: messages, error: msgError } = await client
+    .from('chat_messages')
+    .select('id, room_id, sender_id, content, clean_bot_status, warning_count, sent_at')
+    .eq('room_id', roomId)
+    .order('sent_at', { ascending: true });
+
+  if (msgError) {
+    return res.status(500).json({
+      error: { code: 'INTERNAL_ERROR', message: '메시지 조회에 실패했습니다.' },
+    });
+  }
+
+  res.json({ messages: messages || [] });
+});
+
+// ─── 서버 시작 ───────────────────────────────────────────────────────────────
 const port = PORT || 4000;
 app.listen(port, () => {
   console.log(`\nHARUMAN Backend running: http://localhost:${port}`);

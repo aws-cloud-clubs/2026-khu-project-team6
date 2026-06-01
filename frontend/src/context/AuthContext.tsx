@@ -12,8 +12,9 @@ import React, {
   useMemo,
   useReducer,
 } from 'react';
-import { setAuthToken, clearAuthToken } from '../api/client';
+import { setAuthToken, clearAuthToken, getAuthToken, setSuppressUnauthorizedRedirect } from '../api/client';
 import { login as apiLogin, type LoginRequest } from '../api/auth';
+import { getMyProfile } from '../api/users';
 
 // ─── 타입 ─────────────────────────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ interface AuthContextValue extends AuthState {
 const initialState: AuthState = {
   user: null,
   token: null,
-  isLoading: false,
+  isLoading: true, // 세션 복원 중에는 로딩 상태로 시작
   isAuthenticated: false,
 };
 
@@ -64,7 +65,7 @@ function authReducer(state: AuthState, action: AuthAction): AuthState {
         isAuthenticated: true,
       };
     case 'LOGOUT':
-      return { ...initialState };
+      return { ...initialState, isLoading: false };
     case 'SET_LOADING':
       return { ...state, isLoading: action.payload };
     case 'UPDATE_USER':
@@ -128,6 +129,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     window.addEventListener('auth:unauthorized', handleUnauthorized);
     return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+  }, []);
+
+  // 앱 마운트 시 localStorage에서 토큰 복원 및 유저 정보 재조회
+  useEffect(() => {
+    const restoreSession = async () => {
+      const savedToken = getAuthToken();
+      if (!savedToken) {
+        dispatch({ type: 'SET_LOADING', payload: false });
+        return;
+      }
+
+      try {
+        setSuppressUnauthorizedRedirect(true);
+        setAuthToken(savedToken);
+        const profile = await getMyProfile();
+        dispatch({
+          type: 'LOGIN_SUCCESS',
+          payload: {
+            token: savedToken,
+            user: {
+              id: profile.id,
+              email: profile.email,
+              nickname: profile.nickname,
+              role: profile.role,
+              isVerified: profile.is_verified,
+            },
+          },
+        });
+      } catch {
+        clearAuthToken();
+        dispatch({ type: 'SET_LOADING', payload: false });
+      } finally {
+        setSuppressUnauthorizedRedirect(false);
+      }
+    };
+
+    restoreSession();
   }, []);
 
   const value = useMemo<AuthContextValue>(

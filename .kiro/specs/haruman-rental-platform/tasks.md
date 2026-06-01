@@ -222,7 +222,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - **Validates: Requirements 12.5**
 
 - [ ] 13. AI 챗봇 Lambda 구현 (`POST /ai/chat`)
-  - [~] 13.1 AI 챗봇 엔드포인트 구현
+  - [x] 13.1 AI 챗봇 엔드포인트 구현
     - 메시지 500자 초과 시 거부
     - AWS Bedrock Claude 3 Haiku 호출 (10초 타임아웃, 재시도 없음)
     - `suggestedItemTypes` 배열 반환, 오류 시 "AI 추천을 불러올 수 없습니다" 응답
@@ -267,7 +267,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 로그인 실패 메시지, 계정 잠금 안내
     - _Requirements: 1.1, 1.4, 1.5, 1.6, 1.8, 1.9, 2.2, 2.6, 15.1, 15.2_
 
-  - [~] 16.3 AI 챗봇 + 체크박스 연동 페이지 구현
+  - [x] 16.3 AI 챗봇 + 체크박스 연동 페이지 구현
     - 1280×720 뷰포트에서 챗봇·체크리스트 동시 표시
     - Bedrock 응답 수신 후 2초 이내 체크박스 자동 선택
     - "이 조건으로 물품 찾기" 버튼, 미선택 시 오류 메시지
@@ -288,7 +288,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 알림 토스트/배지 UI, 연결 끊김 메시지
     - _Requirements: 6.1, 6.2, 6.3, 6.7_
 
-  - [~] 16.7 1:1 채팅 UI 구현 (Direct_Trade 전용)
+  - [x] 16.7 1:1 채팅 UI 구현 (Direct_Trade 전용)
     - 채팅방 입장, 메시지 전송, Clean_Bot 경고 팝업("그래도 전송" / "취소")
     - Pickup_Zone 채팅 UI 숨김 처리
     - _Requirements: 6.4, 6.5, 12.4, 13.3_

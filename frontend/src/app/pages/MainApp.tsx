@@ -3,6 +3,17 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
 import { sendAIChat } from '../../api/ai';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router';
+import { useAuth } from '../../context/AuthContext';
+import { sendAIChat } from '../../api/ai';
+
+interface ChatMessage {
+  id: number;
+  text: string;
+  sender: 'user' | 'ai';
+  suggestedItemTypes?: string[];
+}
 
 export default function MainApp() {
   const navigate = useNavigate();
@@ -19,6 +30,11 @@ export default function MainApp() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: number]: boolean }>({});
   const [activeCategory, setActiveCategory] = useState('콘서트');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatIdRef = useRef(0);
 
   useEffect(() => {
     if (isLoading) return;
@@ -106,6 +122,86 @@ export default function MainApp() {
   const toggleCheck = (id: number) => {
     setCheckedItems(prev => ({ ...prev, [id]: !prev[id] }));
   };
+
+  // AI 응답의 suggestedItemTypes로 체크박스 자동 선택 (Requirements: 5.4, 16.3)
+  const autoCheckFromAI = (suggestedItemTypes: string[]) => {
+    if (suggestedItemTypes.length === 0) return;
+
+    // 모든 카테고리의 아이템에서 매칭
+    const allItems = Object.values(checklistData).flat();
+    const newChecked: { [key: number]: boolean } = { ...checkedItems };
+
+    suggestedItemTypes.forEach((typeName) => {
+      const matchedItem = allItems.find(
+        (item) => item.title === typeName || item.title.includes(typeName)
+      );
+      if (matchedItem) {
+        newChecked[matchedItem.id] = true;
+      }
+    });
+
+    setCheckedItems(newChecked);
+  };
+
+  // AI 챗봇 메시지 전송
+  const handleChatSend = async () => {
+    const trimmed = chatInput.trim();
+    if (!trimmed || isChatLoading) return;
+
+    if (trimmed.length > 500) {
+      setChatError('메시지는 500자를 초과할 수 없습니다.');
+      return;
+    }
+
+    setChatError(null);
+    const userMsg: ChatMessage = {
+      id: ++chatIdRef.current,
+      text: trimmed,
+      sender: 'user',
+    };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChat('');
+    setIsChatLoading(true);
+
+    try {
+      const response = await sendAIChat(trimmed);
+      const aiMsg: ChatMessage = {
+        id: ++chatIdRef.current,
+        text: response.reply,
+        sender: 'ai',
+        suggestedItemTypes: response.suggestedItemTypes,
+      };
+      setChatMessages(prev => [...prev, aiMsg]);
+
+      // 2초 이내 체크박스 자동 선택 (Requirements: 16.3)
+      if (response.suggestedItemTypes.length > 0) {
+        setTimeout(() => {
+          autoCheckFromAI(response.suggestedItemTypes);
+        }, 500);
+      }
+    } catch (err: unknown) {
+      const aiMsg: ChatMessage = {
+        id: ++chatIdRef.current,
+        text: 'AI 추천을 불러올 수 없습니다. 잠시 후 다시 시도해주세요.',
+        sender: 'ai',
+      };
+      setChatMessages(prev => [...prev, aiMsg]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const handleChatKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleChatSend();
+    }
+  };
+
+  // 채팅 스크롤 자동 이동
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   const handleRentalClick = () => {
     const checked = currentChecklistItems.filter(item => checkedItems[item.id]);
@@ -319,6 +415,53 @@ export default function MainApp() {
           }`}
         >
           {msg.text}
+          <div className="space-y-3">
+            {chatMessages.length === 0 ? (
+              <div className="text-center py-10 text-gray-400 text-sm">
+                <p>AI 챗봇에게 물어보세요!</p>
+                <p className="mt-1">필요한 물품을 추천받을 수 있어요.</p>
+                <p className="mt-3 text-xs text-gray-300">예: "콘서트 갈 건데 뭐 필요해?"</p>
+              </div>
+            ) : (
+              chatMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                      msg.sender === 'user'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-gray-100 text-gray-900'
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                    {msg.suggestedItemTypes && msg.suggestedItemTypes.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {msg.suggestedItemTypes.map((item, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-block bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full"
+                          >
+                            ✓ {item}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+            {isChatLoading && (
+              <div className="flex justify-start">
+                <div className="bg-gray-100 rounded-xl px-3 py-2 flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+                  <span className="text-sm text-gray-500">생각 중...</span>
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
         </div>
       </div>
     ))}
@@ -334,6 +477,9 @@ export default function MainApp() {
 </div>
 
         <div className="p-4 border-t border-gray-200">
+          {chatError && (
+            <p className="text-xs text-red-500 mb-2">{chatError}</p>
+          )}
           <div className="flex gap-2">
             <input
               type="text"
@@ -341,17 +487,22 @@ export default function MainApp() {
               onChange={(e) => setChat(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAIChat(); } }}
               placeholder="무엇이 궁금하신가요?"
+              onKeyDown={handleChatKeyPress}
+              placeholder="무엇이 궁금하신가요?"
+              maxLength={500}
               disabled={isChatLoading}
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-400 disabled:opacity-50"
             />
             <button
               onClick={handleAIChat}
+              onClick={handleChatSend}
               disabled={isChatLoading || !chatInput.trim()}
               className="bg-purple-600 hover:bg-purple-700 text-white p-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Send className="w-4 h-4" />
             </button>
           </div>
+          <p className="text-xs text-gray-400 mt-1 text-right">{chatInput.length}/500</p>
         </div>
       </div>
       </div>
