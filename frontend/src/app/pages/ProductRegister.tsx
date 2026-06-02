@@ -135,11 +135,9 @@ const handleSubmit = async (e: React.FormEvent) => {
       subcategory: subCategory || null,
     });
 
-    console.log('상품 등록 결과:', result.data);
     alert('상품이 등록되었습니다!');
     navigate('/mypage');
-  } catch (error) {
-    console.error(error);
+  } catch {
     alert('상품 등록 실패');
   }
 };

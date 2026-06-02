@@ -61,9 +61,8 @@ export default function Chat() {
   const prevMessageCountRef = useRef<number>(0);
   const prevMessageIdsRef = useRef<Set<string>>(new Set());
 
-  // 디버그 로그 추가 함수
+  // 디버그 로그 추가 함수 (운영 환경에서는 콘솔 출력 비활성화)
   const log = (msg: string) => {
-    console.log(`[Chat] ${msg}`);
     setDebugLog((prev) => [...prev.slice(-9), `${new Date().toLocaleTimeString()} ${msg}`]);
   };
 

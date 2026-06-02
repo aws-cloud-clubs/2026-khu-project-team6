@@ -42,9 +42,8 @@ export async function pushNotification(
   userId: string,
   payload: NotificationPayload,
 ): Promise<void> {
-  // 테스트 환경에서는 console.log로 대체
+  // 테스트 환경에서는 실제 전송하지 않음
   if (isTestEnv()) {
-    console.log('[push] notification to', userId, JSON.stringify(payload));
     return;
   }
 

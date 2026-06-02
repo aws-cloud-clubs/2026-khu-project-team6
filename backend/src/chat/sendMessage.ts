@@ -237,7 +237,7 @@ export const handler = async (
 
     // 4. Clean_Bot 분석
     const cleanBotResult = await analyzeMessage(content);
-    console.log('🔥 CleanBot 결과:', cleanBotResult);
+
 
     const supabase = getSupabaseClient();
 
@@ -266,14 +266,7 @@ export const handler = async (
         };
       }
 
-      console.warn('[Clean_Bot] 경고 메시지 보류:', {
-        userId,
-        roomId,
-        messageId: (savedMsg as ChatMessage).id,
-        reason: cleanBotResult.reason,
-        warningCount: warningCount + 1,
-        timestamp: new Date().toISOString(),
-      });
+
 
       // 발신자에게 경고 알림 전송
       const warningPayload: NotificationPayload = {

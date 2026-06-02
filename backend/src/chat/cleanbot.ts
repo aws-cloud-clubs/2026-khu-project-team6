@@ -52,14 +52,8 @@ export async function analyzeMessage(content: string): Promise<CleanBotResult> {
     return mockAnalyzeMessage(content);
   }
 
-  console.log('[CleanBot] BEDROCK MODE');
-
   const client = new BedrockRuntimeClient({
     region: 'ap-northeast-2',
-    credentials: {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-    },
   });
 
   const command = new InvokeModelCommand({
@@ -90,14 +84,12 @@ export async function analyzeMessage(content: string): Promise<CleanBotResult> {
     // 공백·개행 제거 후 판정
     const verdict = rawText.trim().toUpperCase();
 
-    console.log('[CleanBot OUTPUT]', verdict);
-    
     if (verdict === 'BANNED') {
       return { verdict: 'warned', reason: '비속어/욕설 감지' };
     }
     return { verdict: 'clean' };
   } catch (error) {
-    console.error('[Clean_Bot] Nova Lite 분석 실패, 메시지 통과 허용:', error);
+    console.error('[Clean_Bot] 분석 실패, 메시지 통과 허용');
     return { verdict: 'failed' };
   }
 }

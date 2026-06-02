@@ -1,6 +1,7 @@
 ﻿/**
  * HARUMAN Backend - Express 진입점
  * Supabase Auth 기반 회원가입/로그인 + AI 챗봇 + 기본 라우팅
+ * Prometheus 메트릭 수집 포함 (GET /metrics)
  */
 
 require('dotenv').config();
@@ -14,6 +15,59 @@ const {
 const { Resend } = require('resend');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const promClient = require('prom-client');
+
+// ─── Prometheus 메트릭 설정 ──────────────────────────────────────────────────
+const register = new promClient.Registry();
+promClient.collectDefaultMetrics({ register });
+
+// HTTP 요청 카운터
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status_code'],
+  registers: [register],
+});
+
+// HTTP 응답 시간 히스토그램
+const httpRequestDuration = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'HTTP request duration in seconds',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
+
+// HTTP 에러 카운터
+const httpErrorsTotal = new promClient.Counter({
+  name: 'http_errors_total',
+  help: 'Total number of HTTP errors (4xx/5xx)',
+  labelNames: ['method', 'route', 'status_code'],
+  registers: [register],
+});
+
+// Bedrock AI 추론 시간 히스토그램
+const bedrockInferenceLatency = new promClient.Histogram({
+  name: 'bedrock_inference_duration_seconds',
+  help: 'Bedrock AI inference latency in seconds',
+  labelNames: ['model', 'status'],
+  buckets: [0.1, 0.5, 1, 2, 3, 5, 8, 10],
+  registers: [register],
+});
+
+// Bedrock 타임아웃 카운터
+const bedrockTimeoutsTotal = new promClient.Counter({
+  name: 'bedrock_timeouts_total',
+  help: 'Total number of Bedrock inference timeouts',
+  registers: [register],
+});
+
+// 활성 WebSocket 연결 게이지
+const wsActiveConnections = new promClient.Gauge({
+  name: 'ws_active_connections',
+  help: 'Number of active WebSocket connections',
+  registers: [register],
+});
 
 // --- 환경변수 검증 ---
 const { SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY, PORT, FRONTEND_URL, RESEND_API_KEY, RESEND_FROM_EMAIL } = process.env;
@@ -26,13 +80,9 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 // Resend 클라이언트 초기화
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
-// Bedrock 클라이언트 (크로스 리전 추론 프로필 사용 시 us-east-1 필요)
+// Bedrock 클라이언트 (AWS SDK 기본 자격증명 체인 사용)
 const bedrock = new BedrockRuntimeClient({
   region: 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
 });
 
 // --- Supabase 클라이언트 초기화 ---
@@ -48,6 +98,38 @@ const supabaseAdmin = SUPABASE_SERVICE_KEY
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: FRONTEND_URL || '*', credentials: true }));
+
+// ─── Prometheus 요청 측정 미들웨어 ───────────────────────────────────────────
+app.use((req, res, next) => {
+  if (req.path === '/metrics' || req.path === '/health') {
+    return next();
+  }
+  const start = process.hrtime.bigint();
+  res.on('finish', () => {
+    const durationNs = Number(process.hrtime.bigint() - start);
+    const durationSec = durationNs / 1e9;
+    const route = req.route?.path || req.path;
+    const labels = { method: req.method, route, status_code: res.statusCode };
+
+    httpRequestsTotal.inc(labels);
+    httpRequestDuration.observe(labels, durationSec);
+
+    if (res.statusCode >= 400) {
+      httpErrorsTotal.inc(labels);
+    }
+  });
+  next();
+});
+
+// ─── Prometheus GET /metrics 엔드포인트 ──────────────────────────────────────
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (err) {
+    res.status(500).end();
+  }
+});
 
 // --- 헬스체크 ---
 app.get('/', (req, res) => {
@@ -68,7 +150,7 @@ app.get('/health', (req, res) => {
 });
 
 // --- AI 챗봇 (Nova Lite, 서울 리전, 크로스 리전 추론 프로필) ---
-app.post('/ai/chat', async (req, res) => {
+app.post('/ai/chat', authMiddleware, async (req, res) => {
   try {
     const { message } = req.body;
 
@@ -99,20 +181,39 @@ app.post('/ai/chat', async (req, res) => {
       })
     });
 
-    const response = await bedrock.send(command);
-    const body = JSON.parse(Buffer.from(response.body).toString());
+    // Bedrock 호출 + 5초 타임아웃 (Promise.race)
+    const BEDROCK_TIMEOUT_MS = 5000;
+    const startTime = Date.now();
+    let response;
 
-    // 디버그: Nova 응답 전체 구조 확인
-    console.log('[AI Chat] Nova raw response:', JSON.stringify(body, null, 2));
+    try {
+      response = await Promise.race([
+        bedrock.send(command),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('BEDROCK_TIMEOUT')), BEDROCK_TIMEOUT_MS)
+        ),
+      ]);
+      const latencySec = (Date.now() - startTime) / 1000;
+      bedrockInferenceLatency.observe({ model: 'nova-lite', status: 'success' }, latencySec);
+    } catch (timeoutErr) {
+      const latencySec = (Date.now() - startTime) / 1000;
+      if (timeoutErr.message === 'BEDROCK_TIMEOUT') {
+        bedrockTimeoutsTotal.inc();
+        bedrockInferenceLatency.observe({ model: 'nova-lite', status: 'timeout' }, latencySec);
+        return res.json({ reply: 'AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.', suggestedItemTypes: [] });
+      }
+      bedrockInferenceLatency.observe({ model: 'nova-lite', status: 'error' }, latencySec);
+      throw timeoutErr;
+    }
+
+    const body = JSON.parse(Buffer.from(response.body).toString());
 
     // Nova 응답 구조: { output: { message: { content: [{ text: "..." }] } } }
     const text = body?.output?.message?.content?.[0]?.text || '';
-    console.log('[AI Chat] Extracted text:', text);
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
 
     if (!jsonMatch) {
-      // JSON 파싱 실패 시 텍스트 자체를 reply로 반환
       return res.json({ reply: text || '추천 결과를 파싱할 수 없습니다.', suggestedItemTypes: [] });
     }
 
@@ -120,7 +221,6 @@ app.post('/ai/chat', async (req, res) => {
     try {
       parsed = JSON.parse(jsonMatch[0]);
     } catch (parseErr) {
-      console.error('[AI Chat] JSON parse error:', parseErr.message, 'raw:', jsonMatch[0]);
       return res.json({ reply: text, suggestedItemTypes: [] });
     }
 
@@ -130,59 +230,26 @@ app.post('/ai/chat', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('[AI Chat] Nova Lite error:', err.message);
     res.json({ reply: 'AI 추천을 불러올 수 없습니다.', suggestedItemTypes: [] });
-  }
-});
-
-// --- Bedrock 연결 테스트 ---
-app.get('/bedrock-test', async (req, res) => {
-  try {
-    const command = new InvokeModelCommand({
-      modelId: 'us.amazon.nova-lite-v1:0',
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify({
-        messages: [
-          { role: 'user', content: [{ text: 'hello' }] }
-        ],
-        system: [{ text: '간단히 인사해.' }],
-        inferenceConfig: { maxTokens: 50, temperature: 0.1 }
-      })
-    });
-
-    const response = await bedrock.send(command);
-    const body = JSON.parse(Buffer.from(response.body).toString());
-    res.json({ success: true, result: body });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // --- 이메일 인증 요청 (Resend 기반 — users.verification_token 사용) ---
 app.post('/auth/send-verification', async (req, res) => {
-  console.log('\n========== [/auth/send-verification] 요청 수신 ==========');
-  console.log('[1] req.body:', JSON.stringify(req.body));
-
   try {
     const { email } = req.body;
     if (!email) {
-      console.error('[ERROR] 이메일 누락');
       return res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: '이메일을 입력해주세요.' } });
     }
 
-    console.log('[2] Resend 클라이언트:', resend ? '✓' : '✗ NULL');
     if (!resend) {
       return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Resend API 키가 설정되지 않았습니다.' } });
     }
 
     const client = supabaseAdmin || supabase;
     const verificationToken = crypto.randomUUID();
-    console.log('[3] 토큰:', verificationToken.slice(0, 8) + '...');
 
     // ─── 안전한 upsert 로직 ───────────────────────────────────────────
-    // 1) 해당 이메일로 기존 유저가 있는지 조회
     const { data: existingUser } = await client
       .from('users')
       .select('id')
@@ -190,22 +257,16 @@ app.post('/auth/send-verification', async (req, res) => {
       .maybeSingle();
 
     if (existingUser) {
-      // 기존 유저 있음 → 토큰만 갱신 (재발송 케이스)
-      console.log('[5] 기존 유저 발견 → UPDATE (id:', existingUser.id.slice(0, 8) + '...)');
       const { error: updateErr } = await client
         .from('users')
         .update({ verification_token: verificationToken, is_verified: false })
         .eq('id', existingUser.id);
 
       if (updateErr) {
-        console.error('[5-ERR] UPDATE 실패:', JSON.stringify(updateErr));
         return res.status(500).json({ error: { code: 'DB_ERROR', message: 'DB 업데이트 실패' } });
       }
-      console.log('[5-OK] UPDATE 성공');
     } else {
-      // 새 유저 → INSERT (id를 명시적으로 생성)
       const newUserId = crypto.randomUUID();
-      console.log('[5] 신규 유저 → INSERT (id:', newUserId.slice(0, 8) + '...)');
       const { error: insertErr } = await client
         .from('users')
         .insert({
@@ -219,15 +280,12 @@ app.post('/auth/send-verification', async (req, res) => {
         });
 
       if (insertErr) {
-        console.error('[5-ERR] INSERT 실패:', JSON.stringify({ message: insertErr.message, code: insertErr.code, details: insertErr.details }));
         return res.status(500).json({ error: { code: 'DB_ERROR', message: 'DB 저장 실패: ' + insertErr.message } });
       }
-      console.log('[5-OK] INSERT 성공');
     }
 
     // ─── Resend 메일 발송 ─────────────────────────────────────────────
     const confirmUrl = `${FRONTEND_URL || 'https://haruman.shop'}/api/auth/confirm?token=${verificationToken}&email=${encodeURIComponent(email)}`;
-    console.log('[6] 인증링크:', confirmUrl);
 
     const emailPayload = {
       from: RESEND_FROM_EMAIL || 'no-reply@haruman.shop',
@@ -235,84 +293,52 @@ app.post('/auth/send-verification', async (req, res) => {
       subject: '[HARUMAN] 이메일 인증을 완료해주세요',
       html: `<div style="font-family:'Apple SD Gothic Neo',sans-serif;max-width:480px;margin:0 auto;padding:40px 20px;"><h1 style="font-size:24px;font-weight:bold;margin-bottom:16px;">HARUMAN</h1><p style="font-size:14px;color:#555;margin-bottom:24px;">아래 버튼을 클릭하여 이메일 인증을 완료해주세요.</p><a href="${confirmUrl}" style="display:inline-block;background-color:#7c3aed;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:14px;font-weight:600;">이메일 인증하기</a><p style="font-size:12px;color:#999;margin-top:24px;">이 링크는 30분 동안 유효합니다.</p></div>`,
     };
-    console.log('[7] 메일 발송:', { from: emailPayload.from, to: emailPayload.to });
 
-    const sendResult = await resend.emails.send(emailPayload);
-    console.log('[8] ✓ Resend 성공:', JSON.stringify(sendResult));
-    console.log('==========================================================\n');
+    await resend.emails.send(emailPayload);
 
     res.json({ message: '인증 메일이 발송되었습니다. 메일함에서 링크를 클릭해주세요.' });
   } catch (err) {
-    console.error('\n========== [/auth/send-verification] 에러 ==========');
-    console.error('가입 에러 상세:', {
-      message: err.message || String(err),
-      status: err.status || err.statusCode || 'N/A',
-      code: err.code || 'N/A',
-      name: err.name || 'N/A',
-    });
-    if (err.response) {
-      console.error('에러 response:', JSON.stringify(err.response.body || err.response.data || err.response));
-    }
-    console.error('스택:', err.stack || '(없음)');
-    console.error('====================================================\n');
-
     return res.status(500).json({
-      error: { code: 'MAIL_ERROR', message: '인증 메일 발송 실패: ' + (err.message || JSON.stringify(err)) },
+      error: { code: 'MAIL_ERROR', message: '인증 메일 발송 실패' },
     });
   }
 });
 
 // --- 이메일 인증 확인 (Confirm — users.verification_token 검증) ---
 app.get('/auth/confirm', async (req, res) => {
-  console.log('\n========== [/auth/confirm] 인증 링크 클릭 ==========');
   const { token, email } = req.query;
-  console.log('[1] params:', { token: token?.slice(0, 8) + '...', email });
 
   if (!token || !email) {
-    console.error('[ERROR] token 또는 email 누락');
     return res.status(400).send('<html><body><h1>잘못된 인증 링크입니다.</h1></body></html>');
   }
 
   const client = supabaseAdmin || supabase;
 
-  // 1. users 테이블에서 해당 이메일의 토큰 조회
   const { data: user, error: selectErr } = await client
     .from('users')
     .select('id, verification_token, is_verified')
     .eq('email', email)
     .single();
 
-  console.log('[2] DB 조회 결과:', user ? { id: user.id.slice(0, 8) + '...', is_verified: user.is_verified, token_match: user.verification_token === token } : 'NULL');
-
   if (selectErr || !user) {
-    console.error('[ERROR] 유저 조회 실패:', selectErr?.message || 'user not found');
     return res.status(400).send('<html><body><h1>유효하지 않은 인증 링크입니다.</h1><p>해당 이메일로 가입 요청을 찾을 수 없습니다.</p></body></html>');
   }
 
   if (user.verification_token !== token) {
-    console.error('[ERROR] 토큰 불일치:', { stored: user.verification_token?.slice(0, 8), received: token.slice(0, 8) });
     return res.status(400).send('<html><body><h1>유효하지 않은 인증 링크입니다.</h1><p>만료되었거나 이미 사용된 링크입니다. 인증 메일을 재발송해주세요.</p></body></html>');
   }
 
-  // 2. DB 업데이트: is_verified = true, verification_token = null
   const { error: updateErr } = await client
     .from('users')
     .update({ is_verified: true, verification_token: null })
     .eq('id', user.id);
 
   if (updateErr) {
-    console.error('[ERROR] UPDATE 실패:', JSON.stringify(updateErr));
     return res.status(500).send('<html><body><h1>인증 처리 중 오류가 발생했습니다.</h1><p>다시 시도해주세요.</p></body></html>');
   }
 
-  console.log('[3] ✓ is_verified=true, verification_token=null 업데이트 성공 (user_id:', user.id.slice(0, 8) + '...)');
-
-  // 3. 프론트엔드의 회원가입 완료 화면(Step 2)으로 리다이렉트
-  //    /signup?verified=true&email=xxx → Signup.tsx가 이 파라미터를 감지하여 Step 2로 진입
   const frontendUrl = FRONTEND_URL || 'http://localhost:5173';
   const redirectUrl = `${frontendUrl}/signup?verified=true&email=${encodeURIComponent(email)}`;
-  console.log('[4] 리다이렉트:', redirectUrl);
-  console.log('==========================================================\n');
 
   res.redirect(302, redirectUrl);
 });
@@ -383,7 +409,6 @@ app.post('/auth/resend-verification', async (req, res) => {
     });
     res.json({ message: '인증 메일이 발송되었습니다. 메일함을 확인해주세요.' });
   } catch (sendError) {
-    console.error('Resend 메일 재발송 실패:', sendError);
     return res.status(500).json({ error: { code: 'MAIL_ERROR', message: '메일 발송에 실패했습니다.' } });
   }
 });
@@ -446,7 +471,6 @@ app.post('/auth/register', async (req, res) => {
   }).eq('id', existingUser.id);
 
   if (updateError) {
-    console.error('회원가입 UPDATE 실패:', updateError.message);
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: '회원가입에 실패했습니다.' } });
   }
 
@@ -457,7 +481,7 @@ app.post('/auth/register', async (req, res) => {
       password,
       email_confirm: true,
       user_metadata: { real_name, nickname, phone },
-    }).catch((err) => console.error('Supabase Auth 유저 생성 실패:', err.message));
+    }).catch(() => { /* Supabase Auth 유저 생성 실패 — 무시 */ });
   }
 
   res.status(201).json({ message: '회원가입이 완료되었습니다. 로그인해주세요.', user: { id: existingUser.id, email } });
@@ -567,13 +591,11 @@ app.put('/users/fcm-token', authMiddleware, async (req, res) => {
       .eq('id', req.user.id);
 
     if (error) {
-      console.error('[FCM Token] UPDATE 실패:', error.message);
       return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'FCM 토큰 저장에 실패했습니다.' } });
     }
 
     res.json({ message: 'FCM 토큰이 업데이트되었습니다.' });
   } catch (err) {
-    console.error('[FCM Token] 예외:', err.message || err);
     res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
@@ -625,24 +647,21 @@ app.put('/users/me', async (req, res) => {
   });
 });
 
-// --- JWT 인증 미들웨어 (상세 에러 로깅 + users 테이블 자동 동기화) ---
+// --- JWT 인증 미들웨어 (users 테이블 자동 동기화) ---
 async function authMiddleware(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.warn('[Auth] 토큰 누락:', req.method, req.path);
       return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '인증 토큰이 필요합니다.' } });
     }
     const token = authHeader.split(' ')[1];
     const { data, error } = await supabase.auth.getUser(token);
     if (error || !data.user) {
-      console.warn('[Auth] 토큰 검증 실패:', error?.message || 'user null', '| path:', req.path);
       return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '유효하지 않은 토큰입니다. 다시 로그인해주세요.' } });
     }
     req.user = data.user;
 
     // users 테이블에 해당 유저가 없으면 자동 동기화 (FK 위반 방지)
-    // Supabase Auth의 id와 우리 users 테이블의 id가 다를 수 있으므로 email로도 조회
     const client = supabaseAdmin || supabase;
     const { data: existingById } = await client
       .from('users')
@@ -651,7 +670,6 @@ async function authMiddleware(req, res, next) {
       .maybeSingle();
 
     if (!existingById) {
-      // id로 못 찾았으면 email로 조회 (회원가입 시 다른 id로 생성된 경우)
       const { data: existingByEmail } = await client
         .from('users')
         .select('id')
@@ -659,20 +677,12 @@ async function authMiddleware(req, res, next) {
         .maybeSingle();
 
       if (existingByEmail) {
-        // email로 찾았으면 id를 Supabase Auth의 id로 업데이트 (동기화)
-        console.log('[Auth] email 기반 유저 발견 → id 동기화:', existingByEmail.id.slice(0, 8), '→', data.user.id.slice(0, 8));
-        const { error: syncErr } = await client
+        await client
           .from('users')
           .update({ id: data.user.id })
           .eq('id', existingByEmail.id);
-
-        if (syncErr) {
-          console.warn('[Auth] id 동기화 실패 (무시하고 진행):', syncErr.message);
-        }
       } else {
-        // 진짜 새 유저 → INSERT
-        console.log('[Auth] users 테이블에 유저 없음 → 자동 생성:', data.user.id.slice(0, 8));
-        const { error: insertErr } = await client.from('users').insert({
+        await client.from('users').insert({
           id: data.user.id,
           email: data.user.email || '',
           real_name: data.user.user_metadata?.real_name || '',
@@ -680,19 +690,12 @@ async function authMiddleware(req, res, next) {
           phone: data.user.user_metadata?.phone || '',
           is_verified: true,
         });
-
-        if (insertErr) {
-          console.warn('[Auth] users INSERT 실패 (무시하고 진행):', insertErr.message);
-        } else {
-          console.log('[Auth] users 자동 생성 성공');
-        }
       }
     }
 
     next();
   } catch (err) {
-    console.error('[Auth] 미들웨어 예외:', err.message || err);
-    return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '인증 처리 중 오류: ' + (err.message || '') } });
+    return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: '인증 처리 중 오류가 발생했습니다.' } });
   }
 }
 
@@ -795,12 +798,10 @@ app.post('/items', authMiddleware, async (req, res) => {
       .single();
 
     if (error) {
-      console.error('[Items] INSERT 실패:', error.message);
       return res.status(400).json({ error: { message: '상품 등록 실패: ' + error.message } });
     }
     res.status(201).json({ item: data });
   } catch (err) {
-    console.error('SERVER ERROR:', err);
     res.status(500).json({ error: { message: '상품 등록 실패' } });
   }
 });
@@ -845,7 +846,6 @@ app.get('/items', async (req, res) => {
 
     res.json({ items });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: { message: '상품 조회 실패' } });
   }
 });
@@ -1023,8 +1023,6 @@ app.post('/chat/rooms/:roomId/messages', authMiddleware, async (req, res) => {
   const { content } = req.body;
   const userId = req.user.id;
 
-  console.log(`[Chat Send] 요청 수신: user=${userId.slice(0,8)} room=${roomId.slice(0,8)} content="${(content || '').slice(0,30)}"`);
-
   if (!content || content.trim().length === 0) {
   return res.status(422).json({ error: { message: '메시지 내용이 필요합니다.' } });
 }
@@ -1066,8 +1064,6 @@ const aiBody = JSON.parse(Buffer.from(aiResponse.body).toString());
 const verdict =
   aiBody?.output?.message?.content?.[0]?.text?.trim() || 'PASSED';
 
-console.log('[CleanBot]', verdict);
-
 if (verdict.includes('BANNED')) {
   return res.status(200).json({
     event: 'clean_bot_warning',
@@ -1084,17 +1080,14 @@ try {
       .single();
 
     if (roomErr) {
-      console.error('[Chat Send] 채팅방 조회 실패:', roomErr.message, roomErr.code);
-      return res.status(500).json({ error: { message: '채팅방 조회 실패: ' + roomErr.message } });
+      return res.status(500).json({ error: { message: '채팅방 조회 실패' } });
     }
 
     if (!room) {
-      console.error('[Chat Send] 채팅방 없음:', roomId);
       return res.status(404).json({ error: { message: '채팅방을 찾을 수 없습니다.' } });
     }
 
     if (room.seller_id !== userId && room.buyer_id !== userId) {
-      console.warn('[Chat Send] 권한 없음:', userId, 'not in', room.seller_id, room.buyer_id);
       return res.status(403).json({ error: { message: '접근 권한이 없습니다.' } });
     }
 
@@ -1110,11 +1103,8 @@ try {
       .single();
 
     if (insertErr) {
-      console.error('[Chat Send] INSERT 실패:', JSON.stringify(insertErr));
       return res.status(500).json({ error: { message: '메시지 저장 실패: ' + (insertErr.message || insertErr.code) } });
     }
-
-    console.log('[Chat Send] 성공:', savedMsg.id);
 
     // ─── 인앱 푸시 알림: 상대방에게 notifications INSERT ───
     try {
@@ -1144,19 +1134,15 @@ try {
       });
 
       if (notifErr) {
-        console.error('[Chat Send] notifications INSERT 에러:', JSON.stringify(notifErr));
-      } else {
-        console.log('[Chat Send] 인앱 알림 전송 완료 → recipient:', recipientId.slice(0, 8));
+        // 알림 저장 실패 — 무시
       }
-    } catch (notifyErr) {
+    } catch {
       // 알림 발송 실패해도 메시지 전송은 정상 처리
-      console.error('[Chat Send] 인앱 알림 INSERT 실패 (무시):', notifyErr.message || notifyErr);
     }
 
     return res.status(201).json({ message: savedMsg });
   } catch (err) {
-    console.error('[Chat Send] 예외:', err.message || err);
-    return res.status(500).json({ error: { message: '서버 오류: ' + (err.message || 'unknown') } });
+    return res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
 
@@ -1166,8 +1152,6 @@ app.post('/chat/rooms', authMiddleware, async (req, res) => {
     const client = supabaseAdmin || supabase;
     const { productId, sellerId } = req.body;
     const buyerId = req.user.id;
-
-    console.log('[Chat Rooms] 생성 요청:', { productId, sellerId, buyerId });
 
     if (!productId || !sellerId) {
       return res.status(422).json({ error: { message: 'productId와 sellerId가 필요합니다.' } });
@@ -1189,11 +1173,10 @@ app.post('/chat/rooms', authMiddleware, async (req, res) => {
       .maybeSingle();
 
     if (findErr) {
-      console.error('[Chat Rooms] 기존 방 조회 실패:', findErr.message);
+      // 조회 실패 — 무시하고 새로 생성
     }
 
     if (existing) {
-      console.log('[Chat Rooms] 기존 방 반환:', existing.id);
       return res.json({ room: existing });
     }
 
@@ -1210,15 +1193,12 @@ app.post('/chat/rooms', authMiddleware, async (req, res) => {
       .single();
 
     if (createErr || !newRoom) {
-      console.error('[Chat Rooms] INSERT 실패:', JSON.stringify(createErr));
-      return res.status(500).json({ error: { message: '채팅방 생성 실패: ' + (createErr?.message || 'unknown') } });
+      return res.status(500).json({ error: { message: '채팅방 생성 실패' } });
     }
 
-    console.log('[Chat Rooms] 새 방 생성:', newRoom.id);
     res.status(201).json({ room: newRoom });
   } catch (err) {
-    console.error('[Chat Rooms] 예외:', err.message || err);
-    res.status(500).json({ error: { message: '서버 오류: ' + (err.message || '') } });
+    res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
 
@@ -1334,7 +1314,7 @@ app.post('/chat/rooms/:roomId/confirm-payment', authMiddleware, async (req, res)
             .single();
 
           if (rentalErr) {
-            console.error('[confirm-payment] rentals INSERT 실패:', JSON.stringify(rentalErr));
+            // rentals INSERT 실패 — 무시
           } else {
             rentalId = newRental.id;
             rentalStatus = 'COMPLETED';
@@ -1343,10 +1323,9 @@ app.post('/chat/rooms/:roomId/confirm-payment', authMiddleware, async (req, res)
               .from('chat_rooms')
               .update({ rental_id: newRental.id, status: 'RENTAL' })
               .eq('id', roomId);
-            console.log('[confirm-payment] rentals 자동 생성 완료:', newRental.id);
           }
         } catch (rentalInsertErr) {
-          console.error('[confirm-payment] rentals INSERT 예외:', rentalInsertErr.message || rentalInsertErr);
+          // rentals INSERT 예외 — 무시
         }
       }
     }
@@ -1404,7 +1383,6 @@ app.post('/chat/rooms/:roomId/purchase', authMiddleware, async (req, res) => {
       .single();
 
     if (rentalErr) {
-      console.error('[Purchase] rentals INSERT 실패:', rentalErr.message);
       return res.status(500).json({ error: { message: '거래 생성 실패' } });
     }
 
@@ -1430,7 +1408,6 @@ app.post('/chat/rooms/:roomId/purchase', authMiddleware, async (req, res) => {
       accountInfo,
     });
   } catch (err) {
-    console.error('[Purchase] 예외:', err.message);
     res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
@@ -1523,21 +1500,16 @@ app.post('/rentals', authMiddleware, async (req, res) => {
       .single();
 
     if (error) {
-      console.error('[Rentals] INSERT 실패:', error.message);
       return res.status(500).json({ error: { message: '대여 생성 실패: ' + error.message } });
     }
 
     // 픽업존일 경우 items.status도 'rented'로 변경
     if (isPickupZone) {
       await client.from('items').update({ status: 'rented' }).eq('id', item_id);
-      console.log('[Rentals] 픽업존 즉시 대여 완료:', rental.id);
-    } else {
-      console.log('[Rentals] 직거래 대여 요청 생성:', rental.id);
     }
 
     res.status(201).json({ rental });
   } catch (err) {
-    console.error('[Rentals] 예외:', err.message || err);
     res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
@@ -1636,7 +1608,6 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
 
     res.json({ rentals });
   } catch (err) {
-    console.error('[Rentals Me]', err);
     res.status(500).json({ error: { message: '서버 오류' } });
   }
 });
@@ -1646,6 +1617,5 @@ const port = PORT || 4000;
 app.listen(port, () => {
   console.log(`\nHARUMAN Backend running: http://localhost:${port}`);
   console.log(`  env: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`  Supabase: ${SUPABASE_URL}`);
   console.log(`  health: http://localhost:${port}/health\n`);
 });

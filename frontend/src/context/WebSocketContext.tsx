@@ -97,11 +97,11 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         dispatchMessage(JSON.parse(event.data) as WsMessage);
       } catch {
-        console.warn('[WebSocket] 메시지 파싱 실패:', event.data);
+        // 메시지 파싱 실패 — 무시
       }
     };
 
-    ws.onerror = (err) => console.error('[WebSocket] 오류:', err);
+    ws.onerror = () => { /* WebSocket 오류 — 재연결 로직에서 처리 */ };
 
     ws.onclose = () => {
       wsRef.current = null;
