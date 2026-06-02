@@ -2,6 +2,7 @@ import { ArrowLeft, Upload, X } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
+import apiClient from '../../api/client';
 
 export default function ProductRegister() {
   const navigate = useNavigate();
@@ -121,34 +122,18 @@ const handleSubmit = async (e: React.FormEvent) => {
   }
 
   try {
-    const response = await fetch('http://localhost:4000/items', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        title: productName,
-        description,
-        category,
-        subcategory: subCategory,
-        price: Number(price.replace(/[^0-9]/g, '')),
-        deposit: 0,
-        trade_type: tradeMethod,
-        image_url: imagePreview,
-        owner_id: user?.id || null,
-        bank_name: bankName || null,
-        account_number: accountNumber || null,
-      }),
+    const result = await apiClient.post('/items', {
+      title: productName,
+      description,
+      price: Number(price.replace(/[^0-9]/g, '')),
+      deposit: 0,
+      trade_type: tradeMethod,
+      image_url: imagePreview,
+      bank_name: bankName || null,
+      account_number: accountNumber || null,
     });
 
-    const result = await response.json();
-
-    console.log('상품 등록 결과:', result);
-
-    if (!response.ok) {
-      throw new Error('상품 등록 실패');
-    }
-
+    console.log('상품 등록 결과:', result.data);
     alert('상품이 등록되었습니다!');
     navigate('/mypage');
   } catch (error) {

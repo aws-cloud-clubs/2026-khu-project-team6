@@ -8,6 +8,7 @@ import Home from './pages/Home';
 import MainApp from './pages/MainApp';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import Signup from './pages/Signup';
 import CompleteProfile from './pages/CompleteProfile';
 import Rental from './pages/Rental';
 import ProductDetail from './pages/ProductDetail';
@@ -57,7 +58,7 @@ export default function App() {
               <Route path="/" element={<Home />} />
               <Route path="/app" element={<MainApp />} />
               <Route path="/login" element={<Login />} />
-              <Route path="/signup" element={<Register />} />
+              <Route path="/signup" element={<Signup />} />
               <Route path="/complete-profile" element={<CompleteProfile />} />
               <Route path="/rental" element={<Rental />} />
               <Route path="/product/:id" element={<ProductDetail />} />

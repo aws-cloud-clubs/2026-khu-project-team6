@@ -297,66 +297,106 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 프로필 수정, 카드 관리, 대여 내역(상태별 탭), Direct_Trade 채팅 버튼
     - _Requirements: 9.4, 9.5, 9.6, 9.7, 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [ ] 17. 직거래 채팅방 UX · 송금 프로세스 · 신고 기능 구현
-  - [ ] 17.1 DB 스키마 확장 (`infra/database/005_chat_payment_report.sql`)
-    - `products` 테이블에 `bank_name VARCHAR(50)`, `account_number VARCHAR(50)` 컬럼 추가
-    - `chat_rooms` 테이블에 `buyer_confirmed BOOLEAN DEFAULT FALSE`, `seller_confirmed BOOLEAN DEFAULT FALSE` 컬럼 추가
-    - `reports` 테이블 생성: `id`, `message_id`, `reporter_id`, `reported_user_id`, `reason`, `created_at`
-    - `notifications` 테이블 생성 (없으면): `id`, `user_id`, `type`, `content`, `status`, `created_at`
+- [ ] 17. 직거래 채팅방 UX · 송금 프로세스 · 신고 기능 구현 (NEW SCHEMA)
+  - [ ] 17.1 DB 스키마 최종 확정 적용 (`infra/database/006_final_schema.sql`)
+    - 기존 `profiles`, `products`, `orders` 테이블 **완전 폐기** — 코드에서 참조 금지
+    - 새 공식 테이블 5개만 사용:
+      - `users`: `id`(UUID PK), `email`, `nickname`, `real_name`, `phone`, `created_at`
+      - `items`: `id`(UUID PK), `seller_id`(FK→users.id), `title`, `description`, `price_per_day`, `deposit_amount`, `trade_type`, `status`(기본값 'AVAILABLE'), `image_url`, `bank_name`, `account_number`, `created_at`
+      - `rentals`: `id`(UUID PK), `item_id`(FK→items.id), `buyer_id`(FK→users.id), `seller_id`(FK→users.id), `status`(기본값 'REQUESTED'), `rental_start`, `rental_end`, `created_at`
+      - `chat_rooms`: `id`(UUID PK), `rental_id`(FK→rentals.id, **Nullable**), `seller_id`(FK→users.id), `buyer_id`(FK→users.id), `buyer_confirmed`(bool, 기본값 false), `seller_confirmed`(bool, 기본값 false), `created_at`
+      - `chat_messages`: `id`(UUID PK), `room_id`(FK→chat_rooms.id), `sender_id`(FK→users.id), `content`, `clean_bot_status`, `sent_at`
+    - DDL 작성 시 FK 제약조건 명시, `rental_id`는 NULL 허용 주의
 
-  - [ ] 17.2 백엔드: 채팅방 생성/조회 API (`POST /chat/rooms`, `GET /chat/rooms`)
-    - 구매자가 [판매자에게 문의하기] 클릭 시 채팅방 생성 또는 기존 방 반환
-    - `GET /chat/rooms`: 로그인 유저가 참여 중인 모든 채팅방 + 마지막 메시지 최신순 반환
+  - [ ] 17.2 백엔드: [Step 1] 문의하기 → 채팅방 생성 API (`POST /chat/rooms`)
+    - 요청 바디: `{ itemId: string, sellerId: string }`
+    - `chat_rooms` INSERT: `seller_id`, `buyer_id`(=로그인 유저), **`rental_id = NULL`**
+    - 기존 방이 있으면(seller_id + buyer_id 매칭) 기존 방 반환
+    - 응답: `{ room: { id, rental_id, seller_id, buyer_id, buyer_confirmed, seller_confirmed } }`
+    - ⚠️ 이 시점에서 `items.bank_name`, `items.account_number`는 **절대 응답에 포함하지 않음**
 
-  - [ ] 17.3 백엔드: 채팅 메시지 CRUD (`GET /chat/rooms/:roomId/messages`, `POST /chat/rooms/:roomId/messages`)
-    - 메시지 전송 시 AWS Bedrock Nova Lite 비속어 필터링 (BANNED/PASSED만 판정)
-    - modelId: `arn:aws:bedrock:ap-northeast-2::inference-profile/amazon.nova-lite-v1:0`, maxTokens=5, temperature=0.0
-    - BANNED 판정 시 메시지 전송 차단 + "부적절한 표현이 포함되어 전송할 수 없습니다." 응답
-    - 5초 타임아웃 시 메시지 통과 허용 + 실패 로그 기록
+  - [ ] 17.3 백엔드: [Step 2] 구매하기 → 거래 생성 API (`POST /chat/rooms/:roomId/purchase`)
+    - Trigger: 구매자가 채팅방에서 [구매하기] 버튼 클릭
+    - 처리 로직:
+      1. `rentals` INSERT: `item_id`, `buyer_id`(=로그인 유저), `seller_id`(=chat_rooms.seller_id), `status='REQUESTED'`, `rental_start`/`rental_end` (요청 바디에서 수신)
+      2. `chat_rooms` UPDATE: 방금 생성된 `rentals.id`를 해당 방의 `rental_id` 컬럼에 세팅
+    - 응답: `{ rental: { id, status }, accountInfo: { bank_name, account_number } }`
+    - ⚠️ 이 응답에서만 `items` 테이블의 `bank_name`, `account_number`를 조회하여 반환
 
-  - [ ] 17.4 백엔드: 메시지 신고 API (`POST /chat/report`)
-    - 요청: `{ messageId, reason? }`
-    - `reports` 테이블에 `message_id`, `reporter_id`, `reported_user_id` 즉시 INSERT
-    - `chat_messages.warning_count` +1 업데이트
-    - 응답: "신고가 완료되었습니다."
+  - [ ] 17.4 백엔드: [Step 3] 송금 확인 API (`POST /chat/rooms/:roomId/confirm-payment`)
+    - 구매자 요청(`role='buyer'`): `chat_rooms.buyer_confirmed = true` UPDATE
+    - 판매자 요청(`role='seller'`): `chat_rooms.seller_confirmed = true` UPDATE
+    - 양쪽 모두 true 감지 시: `rentals.status = 'COMPLETED'` UPDATE (rental_id로 조인)
+    - 응답: `{ confirmed: true, bothConfirmed: boolean, rentalStatus: string }`
 
-  - [ ] 17.5 백엔드: 송금 확인 API (`POST /chat/rooms/:roomId/confirm-payment`)
-    - 구매자 → [송금 완료] 클릭 시 `buyer_confirmed = true` 업데이트
-    - 판매자 → [입금 확인 완료] 클릭 시 `seller_confirmed = true` 업데이트
-    - 양쪽 모두 true → `chat_rooms.status = 'completed'` 자동 전환
-    - 응답에 `bothConfirmed` 플래그 포함
+  - [ ] 17.5 백엔드: 채팅 메시지 전송 API (`POST /chat/rooms/:roomId/messages`)
+    - 요청: `{ content: string }`
+    - AWS Bedrock 비속어 필터링:
+      - modelId: `arn:aws:bedrock:ap-northeast-2::inference-profile/amazon.nova-lite-v1:0`
+      - system prompt: "비속어·욕설이 포함되면 BANNED, 아니면 PASSED 한 단어만 출력."
+      - maxTokens=5, temperature=0.0
+      - 응답 trim → `BANNED` 시 전송 차단 + HTTP 200 `{ event: 'clean_bot_warning', message: '부적절한 표현이 포함되어 전송할 수 없습니다.' }`
+      - 5초 타임아웃 시 통과 허용
+    - 정상 통과 시 `chat_messages` INSERT: `room_id`, `sender_id`(=로그인유저), `content`, `clean_bot_status='clean'`, `sent_at=NOW()`
+    - 응답: `{ message: { id, room_id, sender_id, content, sent_at } }`
 
-  - [ ] 17.6 백엔드: 알림 API (`GET /notifications`, `PATCH /notifications/:id/read`)
-    - 로그인 유저의 알림 목록 최신순 50건 반환
-    - 개별 알림 읽음 처리 (`status = 'read'`)
+  - [ ] 17.6 백엔드: 메시지 조회 API (`GET /chat/rooms/:roomId/messages`)
+    - 채팅방 참여자(seller_id 또는 buyer_id)만 접근 가능
+    - `chat_messages` WHERE `room_id` = :roomId ORDER BY `sent_at` ASC
+    - 응답: `{ messages: [...] }`
 
-  - [ ] 17.7 프론트엔드: 상품 등록 페이지 — 은행명/계좌번호 입력 필드 추가
-    - 판매자가 상품 등록 시 `bank_name`, `account_number` 텍스트 입력
-    - `POST /items` 요청에 해당 필드 포함하여 전송
-    - `owner_id`에 로그인 유저 ID 자동 세팅
+  - [ ] 17.7 백엔드: 메시지 신고 API (`POST /chat/rooms/:roomId/report`)
+    - 요청: `{ messageId: string, reason?: string }`
+    - 신고 대상 메시지에서 `sender_id` 조회 → `reported_user_id`
+    - Supabase `reports` 테이블 INSERT: `message_id`, `reporter_id`(=로그인유저), `reported_user_id`, `reason`, `created_at`
+    - 응답: `{ message: '신고가 완료되었습니다.' }`
+    - ⚠️ `reports` 테이블 DDL: `id`(UUID PK), `message_id`(FK→chat_messages.id), `reporter_id`(FK→users.id), `reported_user_id`(FK→users.id), `reason`(TEXT nullable), `created_at`
 
-  - [ ] 17.8 프론트엔드: 상품 상세 페이지 — 버튼 문구 동적 변환
-    - 로그인 유저 ID === `product.owner_id` → 버튼 텍스트 "구매자와 대화하기"
-    - 그 외 → "판매자에게 문의하기"
-    - 클릭 시 채팅방 생성/이동
+  - [ ] 17.8 백엔드: 채팅방 목록 조회 API (`GET /chat/rooms`)
+    - 로그인 유저가 `seller_id` 또는 `buyer_id`인 모든 채팅방 반환
+    - 각 방의 마지막 메시지(`content`, `sent_at`) JOIN
+    - 최신순 정렬
 
-  - [ ] 17.9 프론트엔드: 채팅방 UI 전면 리뉴얼 (`Chat.tsx`)
-    - **진입 시**: 계좌 정보 비노출 상태, 메시지 목록 + 입력창만 표시
-    - **[구매하기] 버튼**: 구매자에게만 채팅방 상단에 노출
-    - **구매하기 클릭 후**: 판매자 계좌 정보(은행명 + 계좌번호) 패널 오픈 + [송금 완료] 버튼 활성화
-    - **판매자 측**: [입금 확인 완료] 버튼 노출
-    - **양쪽 확인 완료**: "거래 완료" 배지 표시, 버튼 비활성화
-    - **메시지 신고**: 각 말풍선 hover 시 [⚠ 신고] 아이콘 노출, 클릭 시 `POST /chat/report` 호출 + 토스트 "신고가 완료되었습니다."
-    - **비속어 차단 UX**: 전송 시도 후 BANNED 응답 수신 시 경고 스낵바 표시
+  - [ ] 17.9 백엔드: 채팅방 상태 조회 API (`GET /chat/rooms/:roomId`)
+    - `chat_rooms` 전체 컬럼 + 연결된 `items`의 `bank_name`, `account_number` 조건부 반환
+    - **규칙**: `rental_id`가 NULL이면 계좌 정보 미포함 / `rental_id`가 NOT NULL이면 계좌 정보 포함
+    - 프론트가 상태에 따라 UI를 분기하는 근거 데이터
 
-  - [ ] 17.10 프론트엔드: 마이페이지 — 알림함 + 채팅 내역 리스트
-    - **알림함**: `GET /notifications` 연동, 읽지 않은 알림 카운트 빨간 점 배지
-    - **채팅 내역**: `GET /chat/rooms` 연동, 마지막 메시지 + 시간 표시, 클릭 시 채팅방 이동
+  - [ ] 17.10 프론트엔드: 상품 등록 페이지 (`ProductRegister.tsx`)
+    - `items` 테이블 구조에 맞게 필드 매핑:
+      - `title`, `description`, `price_per_day`(숫자), `deposit_amount`, `trade_type`, `image_url`, `bank_name`, `account_number`
+    - `seller_id`는 로그인 유저 ID 자동 세팅
+    - `POST /items` 요청 시 위 필드 전부 포함
 
-  - [ ] 17.11 AI 클린봇 역할 축소 최적화 (`backend/src/chat/cleanbot.ts`)
-    - 시스템 프롬프트: "비속어·욕설이 포함되면 BANNED, 아니면 PASSED 한 단어만 출력."
-    - 장외거래 유도 감지 제거 (시스템 버튼으로 대체)
-    - maxTokens=5, temperature=0.0, 응답 trim 후 BANNED/PASSED만 판별
+  - [ ] 17.11 프론트엔드: 상품 상세 페이지 (`ProductDetail.tsx`)
+    - 로그인 유저 ID === `item.seller_id` → 버튼 텍스트 **"구매자와 대화하기"**
+    - 그 외 → **"판매자에게 문의하기"**
+    - 클릭 시 `POST /chat/rooms` 호출 → 채팅 화면 이동
+
+  - [ ] 17.12 프론트엔드: 채팅방 UI 전면 구현 (`Chat.tsx`)
+    - **[진입 시] rental_id === null 상태**:
+      - 메시지 목록 + 입력창만 렌더링
+      - 상단에 [구매하기] 버튼 활성화 (구매자만 표시)
+      - 판매자 계좌 정보 **완전 미노출**
+    - **[구매하기 클릭] rental_id 생성 후 상태**:
+      - `POST /chat/rooms/:roomId/purchase` 호출
+      - 성공 응답의 `accountInfo`로 판매자 계좌(bank_name + account_number) 패널 즉시 오픈
+      - 구매자 본인 계좌 입력 폼 활성화
+      - [구매하기] 버튼 → [송금 완료] 버튼으로 동적 전환
+    - **[송금 완료 클릭] buyer_confirmed = true**:
+      - `POST /chat/rooms/:roomId/confirm-payment` (role='buyer')
+      - 버튼 → "송금 확인 대기 중" 비활성 상태 전환
+    - **판매자 측: [입금 확인 완료] 버튼**:
+      - `rental_id`가 NOT NULL이고 `buyer_confirmed=true`일 때만 활성화
+      - `POST /chat/rooms/:roomId/confirm-payment` (role='seller')
+    - **양쪽 모두 confirmed → rentals.status='COMPLETED'**:
+      - "🎉 거래 완료" 배지 표시, 모든 결제 관련 버튼 숨김
+    - **메시지 신고**: 말풍선 hover 시 [⚠ 신고] 아이콘, 클릭 → `POST /chat/rooms/:roomId/report` + 토스트
+    - **비속어 차단**: 전송 후 `event: 'clean_bot_warning'` 응답 시 스낵바 "부적절한 표현이 포함되어 전송할 수 없습니다."
+
+  - [ ] 17.13 프론트엔드: 마이페이지 채팅 내역 (`MyPage.tsx`)
+    - `GET /chat/rooms` 연동 → 참여 중인 채팅방 목록 + 마지막 메시지 표시
+    - 클릭 시 해당 채팅방으로 이동
 
 - [ ] 18. 통합 테스트 및 최종 연결
   - [~] 18.1 통합 테스트 작성 (mock 사용)
@@ -383,7 +423,26 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
 - `NODE_ENV=test` 환경에서는 모든 외부 서비스(SES, Bedrock, SMS)를 mock으로 대체합니다.
 - 체크포인트는 단계별 점진적 검증을 보장합니다.
 - 보증금 계산 로직(`calculateDepositRefund`)은 프로퍼티 테스트로 수학적 불변식을 검증합니다.
-- **⚠️ 중요: 상품 데이터는 `items` 테이블이 아닌 `products` 테이블에 저장되어 있음.** 상품 관련 CRUD(등록/조회/수정/삭제)는 반드시 `products` 테이블을 대상으로 해야 함. 컬럼: `id`, `title`, `description`, `category`(문자열), `subcategory`(문자열), `price`(숫자), `deposit`, `trade_type`, `image_url`, `owner_id`, `created_at`.
+
+### ⚠️ 공식 DB 스키마 (2026-06-02 최종 확정)
+
+**기존 `profiles`, `products`, `orders` 테이블은 완전 폐기. 코드에서 절대 참조 금지.**
+
+| 테이블 | PK | 주요 컬럼 | 비고 |
+|--------|-----|-----------|------|
+| `users` | `id` (UUID) | `email`, `nickname`, `real_name`, `phone`, `created_at` | 회원 |
+| `items` | `id` (UUID) | `seller_id`(FK→users), `title`, `description`, `price_per_day`, `deposit_amount`, `trade_type`, `status`(기본 'AVAILABLE'), `image_url`, `bank_name`, `account_number`, `created_at` | 상품 |
+| `rentals` | `id` (UUID) | `item_id`(FK→items), `buyer_id`(FK→users), `seller_id`(FK→users), `status`(기본 'REQUESTED'), `rental_start`, `rental_end`, `created_at` | 대여/거래 |
+| `chat_rooms` | `id` (UUID) | `rental_id`(FK→rentals, **Nullable**), `seller_id`(FK→users), `buyer_id`(FK→users), `buyer_confirmed`(bool, false), `seller_confirmed`(bool, false), `created_at` | 채팅방 |
+| `chat_messages` | `id` (UUID) | `room_id`(FK→chat_rooms), `sender_id`(FK→users), `content`, `clean_bot_status`, `sent_at` | 채팅메시지 |
+| `reports` | `id` (UUID) | `message_id`(FK→chat_messages), `reporter_id`(FK→users), `reported_user_id`(FK→users), `reason`(nullable), `created_at` | 신고 |
+
+### 핵심 비즈니스 플로우
+
+1. **문의하기** → `chat_rooms` INSERT (`rental_id = NULL`) → 계좌 정보 미노출
+2. **구매하기** → `rentals` INSERT (status='REQUESTED') → `chat_rooms.rental_id` UPDATE → 계좌 정보 오픈
+3. **송금 완료** → `chat_rooms.buyer_confirmed = true`
+4. **입금 확인 완료** → `chat_rooms.seller_confirmed = true` → `rentals.status = 'COMPLETED'`
 
 ## Task Dependency Graph
 
@@ -412,9 +471,9 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     { "id": 19, "tasks": ["16.4", "16.5", "16.6"] },
     { "id": 20, "tasks": ["16.7", "16.8"] },
     { "id": 21, "tasks": ["17.1"] },
-    { "id": 22, "tasks": ["17.2", "17.3", "17.4", "17.5", "17.6"] },
-    { "id": 23, "tasks": ["17.7", "17.8", "17.11"] },
-    { "id": 24, "tasks": ["17.9", "17.10"] },
+    { "id": 22, "tasks": ["17.2", "17.5", "17.6", "17.7", "17.8"] },
+    { "id": 23, "tasks": ["17.3", "17.4", "17.9"] },
+    { "id": 24, "tasks": ["17.10", "17.11", "17.12", "17.13"] },
     { "id": 25, "tasks": ["18.1", "18.2"] }
   ]
 }

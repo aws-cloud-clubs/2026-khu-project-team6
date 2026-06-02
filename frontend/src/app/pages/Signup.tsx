@@ -1,17 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router';
-import { supabase } from '../../lib/supabase';
+import { useNavigate, useSearchParams } from 'react-router';
 import { checkDuplicate } from '../../api/auth';
+import apiClient from '../../api/client';
 
 type DuplicateState = 'idle' | 'checking' | 'available' | 'taken';
 
 /**
- * 2단계 회원가입 플로우
- * Step 1: 이메일 입력 → signUp(임시 비밀번호) → 인증 메일 발송 → 링크 클릭 대기
- * Step 2: 인증 완료 감지 → 나머지 정보 입력 → updateUser(진짜 비밀번호 + metadata)
+ * 2단계 회원가입 플로우 (Resend 기반)
+ * Step 1: 이메일 입력 → 백엔드 /auth/send-verification → Resend로 인증 메일 발송 → 링크 클릭 대기
+ * Step 2: 인증 완료 감지 → 나머지 정보 입력 → 백엔드 /auth/register 호출
  */
 export default function Signup() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // ─── Step 상태 ─────────────────────────────────────────────────────────────
   const [step, setStep] = useState<1 | 2>(1);
@@ -58,29 +59,37 @@ export default function Signup() {
     [],
   );
 
-  // ─── onAuthStateChange: 인증 링크 클릭 후 세션 감지 ────────────────────────
+  // ─── URL 파라미터로 인증 완료 감지 (이메일 링크 클릭 후 리다이렉트) ────────
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      // 사용자가 메일 링크를 클릭하고 리다이렉트되면 SIGNED_IN 이벤트 발생
-      if (event === 'SIGNED_IN' && session?.user?.email_confirmed_at) {
-        setIsEmailVerified(true);
-        setStep(2);
-      }
-    });
+    const verified = searchParams.get('verified');
+    const verifiedEmail = searchParams.get('email');
+    if (verified === 'true' && verifiedEmail) {
+      setEmail(decodeURIComponent(verifiedEmail));
+      setIsEmailVerified(true);
+      setIsEmailSent(true);
+      setStep(2);
+    }
+  }, [searchParams]);
 
-    // 페이지 로드 시 이미 세션이 있는지 확인 (링크 클릭 후 리다이렉트된 경우)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user?.email_confirmed_at) {
-        setEmail(session.user.email || '');
-        setIsEmailVerified(true);
-        setStep(2);
-      }
-    });
+  // ─── 이메일 인증 상태 폴링 (메일 전송 후) ─────────────────────────────────
+  useEffect(() => {
+    if (!isEmailSent || isEmailVerified) return;
 
-    return () => subscription.unsubscribe();
-  }, []);
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiClient.post('/auth/verify-email-status', { email });
+        if (res.data.verified) {
+          setIsEmailVerified(true);
+          setStep(2);
+          clearInterval(interval);
+        }
+      } catch { /* 무시 */ }
+    }, 3000); // 3초마다 확인
 
-  // ─── Step 1: 인증메일 전송 ─────────────────────────────────────────────────
+    return () => clearInterval(interval);
+  }, [isEmailSent, isEmailVerified, email]);
+
+  // ─── Step 1: 인증메일 전송 (백엔드 → Resend) ──────────────────────────────
   const handleSendVerification = async () => {
     if (!email || !email.includes('@')) {
       setErrorMsg('올바른 이메일 주소를 입력하세요.');
@@ -90,33 +99,18 @@ export default function Signup() {
     setIsSending(true);
     setErrorMsg('');
 
-    // 임시 랜덤 비밀번호 생성 (나중에 Step 2에서 진짜 비밀번호로 덮어씀)
-    const tempPassword = crypto.randomUUID() + '!Aa1';
-
-    const { error } = await supabase.auth.signUp({
-      email,
-      password: tempPassword,
-      options: {
-        emailRedirectTo: window.location.origin + '/signup',
-      },
-    });
-
-    if (error) {
-      // 이미 가입된 이메일인 경우
-      if (error.message.includes('already registered') || error.message.includes('already been registered')) {
-        setErrorMsg('이미 가입된 이메일입니다. 로그인해주세요.');
-      } else {
-        setErrorMsg('인증 메일 발송 실패: ' + error.message);
-      }
+    try {
+      await apiClient.post('/auth/send-verification', { email });
+      setIsEmailSent(true);
+    } catch (err: any) {
+      const msg = err.response?.data?.error?.message || '인증 메일 발송 실패';
+      setErrorMsg(msg);
+    } finally {
       setIsSending(false);
-      return;
     }
-
-    setIsEmailSent(true);
-    setIsSending(false);
   };
 
-  // ─── Step 2: 가입 완료 (updateUser) ────────────────────────────────────────
+  // ─── Step 2: 가입 완료 (백엔드 /auth/register) ────────────────────────────
   const handleCompleteSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -138,27 +132,22 @@ export default function Signup() {
 
     setIsSubmitting(true);
 
-    // 진짜 비밀번호 + user_metadata 업데이트
-    const { error } = await supabase.auth.updateUser({
-      password,
-      data: {
+    try {
+      await apiClient.post('/auth/register', {
+        email,
+        password,
         real_name: name,
         nickname,
         phone,
-      },
-    });
+      });
 
-    if (error) {
-      setErrorMsg('가입 완료 실패: ' + error.message);
+      setSuccessMsg('회원가입이 완료되었습니다!');
+      setTimeout(() => navigate('/login'), 2000);
+    } catch (err: any) {
+      const msg = err.response?.data?.error?.message || '회원가입에 실패했습니다.';
+      setErrorMsg(msg);
       setIsSubmitting(false);
-      return;
     }
-
-    // 로그아웃 (가입 완료 후 깨끗한 상태에서 로그인하도록)
-    await supabase.auth.signOut();
-
-    setSuccessMsg('회원가입이 완료되었습니다!');
-    setTimeout(() => navigate('/login'), 2000);
   };
 
   // ─── 중복 체크 라벨 ────────────────────────────────────────────────────────

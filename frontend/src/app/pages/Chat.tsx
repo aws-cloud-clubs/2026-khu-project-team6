@@ -14,8 +14,6 @@ interface ChatMessage {
   content: string;
   sender_id: string;
   sent_at: string;
-  clean_bot_status: string;
-  warning_count: number;
 }
 
 interface RoomData {
@@ -56,25 +54,36 @@ export default function Chat() {
     setDebugLog((prev) => [...prev.slice(-9), `${new Date().toLocaleTimeString()} ${msg}`]);
   };
 
-  // 역할 판별 — room이 없으면 product.owner_id로 추론
-  const isBuyer = room
-    ? user?.id === room.buyer_id
-    : !!(user?.id && product.owner_id && user.id !== product.owner_id);
-  const isSeller = room
-    ? user?.id === room.seller_id
-    : !!(user?.id && product.owner_id && user.id === product.owner_id);
+  // 역할 판별 — room 데이터가 있으면 room 기준, 없으면 product.seller_id로 추론
+  // ⚠️ 상호 배타적: isBuyer와 isSeller는 절대 동시에 true가 될 수 없음
+  const isBuyer = (() => {
+    if (!user?.id) return false;
+    if (room) return user.id === room.buyer_id;
+    // room이 없을 때: seller_id(또는 owner_id)와 다르면 구매자
+    const sellerId = product.seller_id || product.owner_id;
+    return !!(sellerId && user.id !== sellerId);
+  })();
+  const isSeller = (() => {
+    if (!user?.id) return false;
+    if (room) return user.id === room.seller_id;
+    const sellerId = product.seller_id || product.owner_id;
+    return !!(sellerId && user.id === sellerId);
+  })();
 
-  // Phase 계산
+  // Phase 계산 — 구매자/판매자 각각의 시점에서 올바른 상태 표시
   useEffect(() => {
     if (!room) return;
-    if (room.status === 'paid' || (room.buyer_confirmed && room.seller_confirmed)) {
+    if (room.buyer_confirmed && room.seller_confirmed) {
       setPhase('done');
-    } else if (room.buyer_confirmed && !room.seller_confirmed) {
-      setPhase(isBuyer ? 'waiting' : 'chat');
+    } else if (isBuyer && room.buyer_confirmed && !room.seller_confirmed) {
+      setPhase('waiting');
+    } else if (isSeller && room.buyer_confirmed && !room.seller_confirmed) {
+      // 판매자 입장: 구매자가 송금완료 누름 → 입금확인 버튼 표시 (chat 상태 유지)
+      setPhase('chat');
     } else if (phase !== 'payment') {
       setPhase('chat');
     }
-  }, [room]);
+  }, [room, isBuyer, isSeller]);
 
   // 메시지 로드
   const loadMessages = async (rid: string) => {

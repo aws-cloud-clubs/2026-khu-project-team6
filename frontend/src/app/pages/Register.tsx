@@ -1,11 +1,11 @@
 /**
  * Step 1: 이메일 인증 요청 페이지
- * 이메일 입력 → signUp(임시 비밀번호) → 인증 메일 발송
+ * 이메일 입력 → 백엔드 /auth/send-verification → Resend로 인증 메일 발송
  */
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { supabase } from '../../lib/supabase';
+import apiClient from '../../api/client';
 
 export default function Register() {
   const navigate = useNavigate();
@@ -23,30 +23,15 @@ export default function Register() {
     setIsSending(true);
     setErrorMsg('');
 
-    // 임시 랜덤 비밀번호 생성 (Step 2에서 진짜 비밀번호로 덮어씀)
-    const tempPassword = crypto.randomUUID() + '!Aa1';
-
-    const { error } = await supabase.auth.signUp({
-      email,
-      password: tempPassword,
-      options: {
-        // 인증 링크 클릭 후 돌아올 URL
-        emailRedirectTo: window.location.origin,
-      },
-    });
-
-    if (error) {
-      if (error.message.includes('already') || error.message.includes('registered')) {
-        setErrorMsg('이미 가입된 이메일입니다. 로그인해주세요.');
-      } else {
-        setErrorMsg('인증 메일 발송 실패: ' + error.message);
-      }
+    try {
+      await apiClient.post('/auth/send-verification', { email });
+      setIsEmailSent(true);
+    } catch (err: any) {
+      const msg = err.response?.data?.error?.message || '인증 메일 발송 실패';
+      setErrorMsg(msg);
+    } finally {
       setIsSending(false);
-      return;
     }
-
-    setIsEmailSent(true);
-    setIsSending(false);
   };
 
   return (
