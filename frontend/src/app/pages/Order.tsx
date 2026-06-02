@@ -1,6 +1,7 @@
 import { ArrowLeft, HelpCircle } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
+import apiClient from '../../api/client';
 
 export default function Order() {
   const navigate = useNavigate();
@@ -16,14 +17,34 @@ export default function Order() {
   const [bank, setBank] = useState('');
   const [rentalDays, setRentalDays] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !phone || !address || !accountHolder || !accountNumber || !bank || !rentalDays) {
       alert('모든 항목을 입력해주세요.');
       return;
     }
-    alert('대여 신청이 완료되었습니다!');
-    navigate('/mypage');
+
+    try {
+      // rentals 테이블에 INSERT
+      const today = new Date();
+      const rentalStart = today.toISOString().split('T')[0];
+      const endDate = new Date(today);
+      endDate.setDate(endDate.getDate() + Number(rentalDays));
+      const rentalEnd = endDate.toISOString().split('T')[0];
+
+      await apiClient.post('/rentals', {
+        item_id: product.id,
+        seller_id: product.seller_id,
+        rental_start: rentalStart,
+        rental_end: rentalEnd,
+      });
+
+      alert('대여 신청이 완료되었습니다!');
+      navigate('/my-rentals');
+    } catch (err: unknown) {
+      const e2 = err as { response?: { data?: { error?: { message?: string } } } };
+      alert('대여 신청 실패: ' + (e2?.response?.data?.error?.message || '서버 오류'));
+    }
   };
 
   return (

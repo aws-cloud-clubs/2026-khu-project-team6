@@ -280,7 +280,23 @@ export default function Chat() {
     if (!roomId) return;
     try {
       const res = await apiClient.post(`/chat/rooms/${roomId}/confirm-payment`, { role });
+
       if (res.data.bothConfirmed) {
+        // 양쪽 모두 확인 → rentals 생성 (직거래 거래 완료)
+        try {
+          const today = new Date().toISOString().split('T')[0];
+          const endDate = new Date();
+          endDate.setDate(endDate.getDate() + 3);
+          await apiClient.post('/rentals', {
+            item_id: product.id,
+            seller_id: product.seller_id || product.owner_id,
+            rental_start: today,
+            rental_end: endDate.toISOString().split('T')[0],
+          });
+        } catch {
+          // rental 생성 실패해도 거래 확인은 성공 처리
+          console.warn('[Chat] rental 생성 실패 (무시)');
+        }
         alert('🎉 양쪽 모두 확인! 거래가 완료되었습니다.');
       } else {
         alert('✅ 확인 완료. 상대방의 확인을 기다립니다.');

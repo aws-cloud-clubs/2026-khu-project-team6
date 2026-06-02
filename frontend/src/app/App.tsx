@@ -4,6 +4,7 @@ import { AuthProvider } from '../context/AuthContext';
 import { WebSocketProvider } from '../context/WebSocketContext';
 import { NotificationProvider } from '../context/NotificationContext';
 import { supabase } from '../lib/supabase';
+import GlobalNotificationToast from './components/GlobalNotificationToast';
 import Home from './pages/Home';
 import MainApp from './pages/MainApp';
 import Login from './pages/Login';
@@ -52,6 +53,8 @@ export default function App() {
       <AuthProvider>
         <WebSocketProvider>
           <NotificationProvider>
+            {/* 전역 알림 토스트 (모든 페이지에서 동작) */}
+            <GlobalNotificationToast />
             {/* 인증 리다이렉트 감지 (라우터 내부에서 동작) */}
             <AuthRedirectHandler />
             <Routes>

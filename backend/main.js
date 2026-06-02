@@ -1129,11 +1129,11 @@ try {
 
       const senderNickname = senderProfile?.nickname || '알 수 없음';
 
-      await client.from('notifications').insert({
+      const { error: notifErr } = await client.from('notifications').insert({
         user_id: recipientId,
         type: 'chat_message',
-        channel: 'push',
-        status: 'unread',
+        channel: 'websocket',
+        status: 'sent',
         content: JSON.stringify({
           title: senderNickname,
           body: content.trim().slice(0, 200),
@@ -1141,10 +1141,13 @@ try {
           senderId: userId,
           messageId: savedMsg.id,
         }),
-        sent_at: new Date().toISOString(),
       });
 
-      console.log('[Chat Send] 인앱 알림 전송 완료 → recipient:', recipientId.slice(0, 8));
+      if (notifErr) {
+        console.error('[Chat Send] notifications INSERT 에러:', JSON.stringify(notifErr));
+      } else {
+        console.log('[Chat Send] 인앱 알림 전송 완료 → recipient:', recipientId.slice(0, 8));
+      }
     } catch (notifyErr) {
       // 알림 발송 실패해도 메시지 전송은 정상 처리
       console.error('[Chat Send] 인앱 알림 INSERT 실패 (무시):', notifyErr.message || notifyErr);
@@ -1175,12 +1178,13 @@ app.post('/chat/rooms', authMiddleware, async (req, res) => {
       return res.status(422).json({ error: { message: '자신의 상품에는 채팅을 시작할 수 없습니다.' } });
     }
 
-    // 기존 채팅방 확인 (seller + buyer 조합)
+    // 기존 채팅방 확인 (seller + buyer + item_id 조합 — 상품별로 다른 채팅방)
     const { data: existing, error: findErr } = await client
       .from('chat_rooms')
       .select('*')
       .eq('seller_id', sellerId)
       .eq('buyer_id', buyerId)
+      .eq('item_id', productId)
       .limit(1)
       .maybeSingle();
 
@@ -1193,32 +1197,21 @@ app.post('/chat/rooms', authMiddleware, async (req, res) => {
       return res.json({ room: existing });
     }
 
-    // 새 채팅방 생성
-    // chat_rooms.rental_id는 nullable (006 마이그레이션 적용 후)
-    // 구매하기 클릭 시 rentals INSERT → rental_id UPDATE 연동
-    let newRoom = null;
-    let createError = null;
-
-    const { data: room1, error: err1 } = await client
+    // 새 채팅방 생성 (item_id 포함)
+    const { data: newRoom, error: createErr } = await client
       .from('chat_rooms')
       .insert({
         seller_id: sellerId,
         buyer_id: buyerId,
+        item_id: productId,
         status: 'CHAT',
       })
       .select()
       .single();
 
-    if (!err1 && room1) {
-      newRoom = room1;
-    } else {
-      console.error('[Chat Rooms] INSERT 실패:', JSON.stringify(err1));
-      createError = err1;
-    }
-
-    if (createError || !newRoom) {
-      console.error('[Chat Rooms] INSERT 최종 실패:', JSON.stringify(createError));
-      return res.status(500).json({ error: { message: '채팅방 생성 실패: ' + (createError?.message || 'unknown') } });
+    if (createErr || !newRoom) {
+      console.error('[Chat Rooms] INSERT 실패:', JSON.stringify(createErr));
+      return res.status(500).json({ error: { message: '채팅방 생성 실패: ' + (createErr?.message || 'unknown') } });
     }
 
     console.log('[Chat Rooms] 새 방 생성:', newRoom.id);
@@ -1307,14 +1300,55 @@ app.post('/chat/rooms/:roomId/confirm-payment', authMiddleware, async (req, res)
 
     const bothConfirmed = updated?.buyer_confirmed && updated?.seller_confirmed;
     let rentalStatus = 'REQUESTED';
+    let rentalId = updated?.rental_id || null;
 
-    if (bothConfirmed && updated?.rental_id) {
-      // rentals.status = 'COMPLETED' 업데이트
-      await client
-        .from('rentals')
-        .update({ status: 'COMPLETED' })
-        .eq('id', updated.rental_id);
-      rentalStatus = 'COMPLETED';
+    if (bothConfirmed) {
+      if (rentalId) {
+        // 이미 rental이 연결되어 있으면 상태만 COMPLETED로
+        await client
+          .from('rentals')
+          .update({ status: 'COMPLETED' })
+          .eq('id', rentalId);
+        rentalStatus = 'COMPLETED';
+      } else {
+        // rental_id가 없으면 → rentals 테이블에 새로 INSERT (직거래 거래 완료)
+        try {
+          // chat_rooms.item_id에서 상품 ID를 가져옴
+          const itemId = room.item_id || null;
+
+          const today = new Date();
+          const rentalEnd = new Date(today);
+          rentalEnd.setDate(rentalEnd.getDate() + 3);
+
+          const { data: newRental, error: rentalErr } = await client
+            .from('rentals')
+            .insert({
+              item_id: itemId,
+              buyer_id: room.buyer_id,
+              seller_id: room.seller_id,
+              status: 'COMPLETED',
+              rental_start: today.toISOString().split('T')[0],
+              rental_end: rentalEnd.toISOString().split('T')[0],
+            })
+            .select()
+            .single();
+
+          if (rentalErr) {
+            console.error('[confirm-payment] rentals INSERT 실패:', JSON.stringify(rentalErr));
+          } else {
+            rentalId = newRental.id;
+            rentalStatus = 'COMPLETED';
+            // chat_rooms에 rental_id 연결
+            await client
+              .from('chat_rooms')
+              .update({ rental_id: newRental.id, status: 'RENTAL' })
+              .eq('id', roomId);
+            console.log('[confirm-payment] rentals 자동 생성 완료:', newRental.id);
+          }
+        } catch (rentalInsertErr) {
+          console.error('[confirm-payment] rentals INSERT 예외:', rentalInsertErr.message || rentalInsertErr);
+        }
+      }
     }
 
     res.json({
@@ -1442,6 +1476,72 @@ app.post('/chat/rooms/:roomId/report', authMiddleware, async (req, res) => {
   }
 });
 
+// --- 대여 생성 (픽업존/직거래 공통) ---
+app.post('/rentals', authMiddleware, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabase;
+    const buyerId = req.user.id;
+    const { item_id, seller_id, rental_start, rental_end } = req.body;
+
+    if (!item_id || !rental_start || !rental_end) {
+      return res.status(422).json({ error: { message: 'item_id, rental_start, rental_end가 필요합니다.' } });
+    }
+
+    // seller_id가 없으면 item에서 가져옴 + trade_type 확인
+    let finalSellerId = seller_id;
+    let tradeType = null;
+    const { data: item } = await client.from('items').select('seller_id, trade_type').eq('id', item_id).single();
+    if (item) {
+      if (!finalSellerId) finalSellerId = item.seller_id;
+      tradeType = item.trade_type;
+    }
+
+    if (!finalSellerId) {
+      return res.status(422).json({ error: { message: '판매자 정보를 찾을 수 없습니다.' } });
+    }
+
+    // 자기 자신 대여 방지
+    if (buyerId === finalSellerId) {
+      return res.status(422).json({ error: { message: '본인 상품은 대여할 수 없습니다.' } });
+    }
+
+    // 픽업존: 즉시 대여 완료 (RENTING) / 직거래: 요청 상태 (REQUESTED)
+    const isPickupZone = tradeType === '픽업존' || tradeType === 'pickup_zone';
+    const rentalStatus = isPickupZone ? 'RENTING' : 'REQUESTED';
+
+    const { data: rental, error } = await client
+      .from('rentals')
+      .insert({
+        item_id,
+        buyer_id: buyerId,
+        seller_id: finalSellerId,
+        status: rentalStatus,
+        rental_start,
+        rental_end,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Rentals] INSERT 실패:', error.message);
+      return res.status(500).json({ error: { message: '대여 생성 실패: ' + error.message } });
+    }
+
+    // 픽업존일 경우 items.status도 'rented'로 변경
+    if (isPickupZone) {
+      await client.from('items').update({ status: 'rented' }).eq('id', item_id);
+      console.log('[Rentals] 픽업존 즉시 대여 완료:', rental.id);
+    } else {
+      console.log('[Rentals] 직거래 대여 요청 생성:', rental.id);
+    }
+
+    res.status(201).json({ rental });
+  } catch (err) {
+    console.error('[Rentals] 예외:', err.message || err);
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
 // --- 내 대여 내역 조회 (buyer 또는 seller로 참여한 모든 rentals) ---
 app.get('/rentals/me', authMiddleware, async (req, res) => {
   try {
@@ -1451,13 +1551,13 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
     // buyer 또는 seller로 참여한 rentals 조회
     const { data: buyerRentals, error: buyerErr } = await client
       .from('rentals')
-      .select('id, item_id, buyer_id, seller_id, status, trade_type, rental_start, rental_end, created_at')
+      .select('id, item_id, buyer_id, seller_id, status, rental_start, rental_end, created_at')
       .eq('buyer_id', userId)
       .order('created_at', { ascending: false });
 
     const { data: sellerRentals, error: sellerErr } = await client
       .from('rentals')
-      .select('id, item_id, buyer_id, seller_id, status, trade_type, rental_start, rental_end, created_at')
+      .select('id, item_id, buyer_id, seller_id, status, rental_start, rental_end, created_at')
       .eq('seller_id', userId)
       .order('created_at', { ascending: false });
 
@@ -1486,6 +1586,7 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
     const statusMap = {
       'REQUESTED': '요청 중',
       'CONFIRMED': '확정',
+      'RENTING': '대여 중',
       'COMPLETED': '거래 완료',
       'CANCELLED': '취소됨',
       '예약요청': '요청 중',
@@ -1502,11 +1603,11 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
 
     const rentals = unique.map((r) => {
       const item = itemsMap[r.item_id] || {};
-      // trade_type 결정: rental에 있으면 rental것, 없으면 item에서
-      const tradeMethod = r.trade_type === 'pickup_zone' ? '픽업존'
-        : r.trade_type === 'direct_trade' ? '직거래'
-        : item.trade_type === 'pickup_zone' ? '픽업존'
+      // trade_type은 items 테이블에서 가져옴 (rentals에는 없음)
+      const tradeMethod = item.trade_type === 'pickup_zone' ? '픽업존'
         : item.trade_type === 'direct_trade' ? '직거래'
+        : item.trade_type === '픽업존' ? '픽업존'
+        : item.trade_type === '직거래' ? '직거래'
         : item.trade_type || '직거래';
 
       // 마감 기한 계산
