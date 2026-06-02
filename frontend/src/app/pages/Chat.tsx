@@ -1,28 +1,31 @@
 /**
- * 1:1 채팅 페이지 — 구매/송금 프로세스 통합
- * 디버깅 로그 포함 버전
+ * 1:1 채팅 페이지 (Direct_Trade 전용)
+ * WebSocket을 통한 실시간 메시지 송수신
+ * Clean_Bot 경고 팝업 ("그래도 전송" / "취소") 포함
+ * Requirements: 6.4, 6.5, 12.4, 13.3, 16.7
  */
 
-import { ArrowLeft, Send, CreditCard, CheckCircle2, Clock, Flag } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { ArrowLeft, Send, AlertTriangle } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router';
+import { useWebSocket } from '../../context/WebSocketContext';
 import { useAuth } from '../../context/AuthContext';
 import apiClient from '../../api/client';
 
-interface ChatMessage {
+interface Message {
   id: string;
-  content: string;
-  sender_id: string;
-  sent_at: string;
+  text: string;
+  sender: 'me' | 'other';
+  time: string;
+  cleanBotStatus?: string;
 }
 
-interface RoomData {
-  id: string;
-  seller_id: string;
-  buyer_id: string;
-  status: string;
-  buyer_confirmed: boolean;
-  seller_confirmed: boolean;
+interface CleanBotWarning {
+  messageId: string;
+  reason: string;
+  warningCount: number;
+  remainingWarnings: number;
+  originalContent: string;
 }
 
 type Phase = 'chat' | 'payment' | 'waiting' | 'done';
@@ -31,193 +34,134 @@ export default function Chat() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  const { sendChatMessage, subscribe, status } = useWebSocket();
+
+  const roomId = location.state?.roomId || '';
   const product = location.state?.product || {};
-  const passedRoomId: string | null = location.state?.roomId || null;
+  const otherUserName = location.state?.otherUserName || '상대방';
 
-  // Core state
-  const [roomId, setRoomId] = useState<string | null>(passedRoomId);
-  const [room, setRoom] = useState<RoomData | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [phase, setPhase] = useState<Phase>('chat');
-  const [buyerAccount, setBuyerAccount] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [debugLog, setDebugLog] = useState<string[]>([]);
-
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [warning, setWarning] = useState<CleanBotWarning | null>(null);
+  const [isBlocked, setIsBlocked] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 디버그 로그 추가 함수
-  const log = (msg: string) => {
-    console.log(`[Chat] ${msg}`);
-    setDebugLog((prev) => [...prev.slice(-9), `${new Date().toLocaleTimeString()} ${msg}`]);
-  };
-
-  // 역할 판별 — room 데이터가 있으면 room 기준, 없으면 product.seller_id로 추론
-  // ⚠️ 상호 배타적: isBuyer와 isSeller는 절대 동시에 true가 될 수 없음
-  const isBuyer = (() => {
-    if (!user?.id) return false;
-    if (room) return user.id === room.buyer_id;
-    // room이 없을 때: seller_id(또는 owner_id)와 다르면 구매자
-    const sellerId = product.seller_id || product.owner_id;
-    return !!(sellerId && user.id !== sellerId);
-  })();
-  const isSeller = (() => {
-    if (!user?.id) return false;
-    if (room) return user.id === room.seller_id;
-    const sellerId = product.seller_id || product.owner_id;
-    return !!(sellerId && user.id === sellerId);
-  })();
-
-  // Phase 계산 — 구매자/판매자 각각의 시점에서 올바른 상태 표시
+  // 기존 메시지 로드
   useEffect(() => {
-    if (!room) return;
-    if (room.buyer_confirmed && room.seller_confirmed) {
-      setPhase('done');
-    } else if (isBuyer && room.buyer_confirmed && !room.seller_confirmed) {
-      setPhase('waiting');
-    } else if (isSeller && room.buyer_confirmed && !room.seller_confirmed) {
-      // 판매자 입장: 구매자가 송금완료 누름 → 입금확인 버튼 표시 (chat 상태 유지)
-      setPhase('chat');
-    } else if (phase !== 'payment') {
-      setPhase('chat');
-    }
-  }, [room, isBuyer, isSeller]);
+    if (!roomId) return;
 
-  // 메시지 로드
-  const loadMessages = async (rid: string) => {
-    try {
-      const res = await apiClient.get(`/chat/rooms/${rid}/messages`);
-      setMessages(res.data.messages || []);
-    } catch (err: unknown) {
-      const e = err as { response?: { status?: number; data?: unknown } };
-      log(`메시지 로드 실패: status=${e?.response?.status} data=${JSON.stringify(e?.response?.data)}`);
-    }
-  };
-
-  // 방 정보 로드
-  const loadRoom = async (rid: string) => {
-    try {
-      const res = await apiClient.get('/chat/rooms');
-      const rooms: RoomData[] = res.data.rooms || [];
-      const found = rooms.find((r) => r.id === rid);
-      if (found) {
-        setRoom(found);
-        log(`방 로드 성공: buyer=${found.buyer_id?.slice(0,8)} seller=${found.seller_id?.slice(0,8)} status=${found.status}`);
-      } else {
-        log(`방 목록에서 ${rid.slice(0,8)} 못 찾음 (총 ${rooms.length}개)`);
-      }
-    } catch (err: unknown) {
-      const e = err as { response?: { status?: number } };
-      log(`방 로드 실패: ${e?.response?.status}`);
-    }
-  };
-
-  // 초기화
-  useEffect(() => {
-    if (!user?.id) {
-      log('유저 없음 — 로그인 필요');
-      setLoading(false);
-      return;
-    }
-
-    log(`초기화 시작: user=${user.id.slice(0,8)} roomId=${passedRoomId?.slice(0,8) || 'null'} product.id=${product.id || 'null'}`);
-
-    const init = async () => {
+    const loadMessages = async () => {
       try {
-        let rid = passedRoomId;
-
-        // 채팅방 생성/조회
-        if (!rid && product.id) {
-          log(`채팅방 생성 요청: productId=${product.id} sellerId=${product.owner_id}`);
-          const res = await apiClient.post('/chat/rooms', {
-            productId: product.id,
-            sellerId: product.owner_id || product.seller_id,
-          });
-          rid = res.data.room.id;
-          setRoom(res.data.room);
-          log(`채팅방 생성 완료: roomId=${rid}`);
-        }
-
-        if (rid) {
-          setRoomId(rid);
-          await loadMessages(rid);
-          await loadRoom(rid);
-          log('초기화 완료');
-        } else {
-          log('roomId를 확보하지 못함');
-        }
-      } catch (err: unknown) {
-        const e = err as { response?: { status?: number; data?: unknown }; message?: string };
-        log(`초기화 에러: ${e?.response?.status || e?.message || 'unknown'}`);
-      } finally {
-        setLoading(false);
+        const res = await apiClient.get(`/chat/rooms/${roomId}/messages`);
+        const loaded = (res.data.messages || []).map((msg: {
+          id: string;
+          sender_id: string;
+          content: string;
+          clean_bot_status: string;
+          sent_at: string;
+        }) => ({
+          id: msg.id,
+          text: msg.content,
+          sender: msg.sender_id === user?.id ? 'me' : 'other',
+          time: new Date(msg.sent_at).toLocaleTimeString('ko-KR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          cleanBotStatus: msg.clean_bot_status,
+        }));
+        setMessages(loaded);
+      } catch (err) {
+        console.error('메시지 로드 실패:', err);
       }
     };
 
-    init();
-  }, [user?.id]);
+    loadMessages();
+  }, [roomId, user?.id]);
 
-  // 폴링 (3초)
+  // WebSocket 메시지 수신
   useEffect(() => {
-    if (!roomId) return;
-    pollRef.current = setInterval(async () => {
-      await loadMessages(roomId);
-      await loadRoom(roomId);
-    }, 3000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [roomId]);
+    const unsubscribe = subscribe('chat_message', (wsMsg) => {
+      const data = wsMsg.data as Record<string, unknown> | undefined;
+      if (!data) return;
 
-  // 스크롤
+      // Clean_Bot 경고 응답 처리
+      if (data.event === 'clean_bot_warning') {
+        setWarning({
+          messageId: data.messageId as string,
+          reason: data.reason as string,
+          warningCount: data.warningCount as number,
+          remainingWarnings: data.remainingWarnings as number,
+          originalContent: message,
+        });
+        return;
+      }
+
+      // 채팅 차단 응답
+      if (data.event === 'chat_blocked') {
+        setIsBlocked(true);
+        return;
+      }
+
+      // 새 메시지 수신
+      if (data.event === 'new_message' && data.roomId === roomId) {
+        const newMsg: Message = {
+          id: data.messageId as string,
+          text: data.content as string,
+          sender: data.senderId === user?.id ? 'me' : 'other',
+          time: new Date(data.sentAt as string).toLocaleTimeString('ko-KR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          cleanBotStatus: data.cleanBotStatus as string,
+        };
+        setMessages(prev => [...prev, newMsg]);
+      }
+    });
+
+    return unsubscribe;
+  }, [subscribe, roomId, user?.id, message]);
+
+  // 스크롤 자동 이동
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ─── 메시지 전송 ───
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || !roomId) {
-      log(`전송 불가: text=${!!text} roomId=${roomId}`);
+  const handleSend = useCallback(() => {
+    if (!message.trim() || !roomId || isBlocked) return;
+
+    if (message.length > 1000) {
+      alert('메시지는 1000자를 초과할 수 없습니다.');
       return;
     }
 
-    setInput('');
-    setSending(true);
-    log(`전송 시작: roomId=${roomId.slice(0,8)} text="${text.slice(0,20)}"`);
+    // WebSocket으로 메시지 전송
+    sendChatMessage(roomId, message.trim());
 
-    try {
-      const res = await apiClient.post(`/chat/rooms/${roomId}/messages`, { content: text });
-      log(`전송 응답: ${JSON.stringify(res.data).slice(0,100)}`);
+    // 낙관적 UI 업데이트
+    const optimisticMsg: Message = {
+      id: `temp-${Date.now()}`,
+      text: message.trim(),
+      sender: 'me',
+      time: new Date().toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+    setMessage('');
+  }, [message, roomId, isBlocked, sendChatMessage]);
 
-      if (res.data.event === 'clean_bot_warning') {
-        alert('⚠️ 비속어가 포함된 메시지입니다. 전송이 차단되었습니다.');
-        setInput(text);
-        return;
-      }
+  // "그래도 전송" 처리 (Requirements: 12.4, 13.3)
+  const handleForceOverride = useCallback(() => {
+    if (!warning || !roomId) return;
+    sendChatMessage(roomId, warning.originalContent, true);
+    setWarning(null);
+  }, [warning, roomId, sendChatMessage]);
 
-      // 즉시 갱신
-      await loadMessages(roomId);
-    } catch (err: unknown) {
-      const e = err as { response?: { status?: number; data?: { error?: { message?: string } } }; message?: string };
-      const serverMsg = e?.response?.data?.error?.message || e?.message || 'unknown';
-      const status = e?.response?.status;
-      log(`전송 실패: status=${status} msg=${serverMsg}`);
-      setInput(text);
-
-      if (status === 401) {
-        alert('세션이 만료되었습니다. 다시 로그인해주세요.');
-      } else {
-        alert(`전송 실패: ${serverMsg}`);
-      }
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  };
+  // "취소" 처리
+  const handleCancelWarning = useCallback(() => {
+    setWarning(null);
+  }, []);
 
   // ─── 구매하기 클릭 ───
   const handleBuyClick = () => {
@@ -268,8 +212,27 @@ export default function Chat() {
             <ArrowLeft className="w-6 h-6" />
           </button>
           <div className="flex-1">
-            <h1 className="text-lg font-bold">{isSeller ? '구매자와 채팅' : '판매자와 채팅'}</h1>
-            {product.title && <p className="text-xs text-gray-500">{product.title}</p>}
+            <h1 className="text-xl font-bold">{otherUserName}님과 채팅</h1>
+            <p className="text-xs text-gray-500">{product.title || 'Direct Trade'}</p>
+          </div>
+          {/* 연결 상태 표시 */}
+          <div className="flex items-center gap-1">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                status === 'connected'
+                  ? 'bg-green-500'
+                  : status === 'reconnecting'
+                    ? 'bg-yellow-500'
+                    : 'bg-red-500'
+              }`}
+            />
+            <span className="text-xs text-gray-400">
+              {status === 'connected'
+                ? '연결됨'
+                : status === 'reconnecting'
+                  ? '재연결 중...'
+                  : '연결 끊김'}
+            </span>
           </div>
           {phase === 'done' && (
             <span className="px-3 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full flex items-center gap-1">
@@ -361,45 +324,47 @@ export default function Chat() {
         </div>
       )}
 
-      {/* ═══ 거래 완료 ═══ */}
-      {phase === 'done' && (
-        <div className="bg-green-50 border-b border-green-200 px-6 py-4 text-center">
-          <p className="text-green-800 font-bold text-lg">🎉 거래가 완료되었습니다!</p>
+      {/* Blocked Banner */}
+      {isBlocked && (
+        <div className="bg-red-50 border-b border-red-200 px-8 py-3">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertTriangle className="w-4 h-4" />
+            <span className="text-sm font-medium">
+              경고 누적으로 채팅이 차단되었습니다. 관리자에게 문의하세요.
+            </span>
+          </div>
         </div>
       )}
 
-      {/* ═══ Messages ═══ */}
-      <div className="flex-1 overflow-auto px-6 py-4">
-        <div className="max-w-3xl mx-auto space-y-3">
+      {/* Messages */}
+      <div className="flex-1 overflow-auto p-8">
+        <div className="max-w-3xl mx-auto space-y-4">
           {messages.length === 0 ? (
             <div className="text-center py-16 text-gray-400">
               <p>메시지가 없습니다.</p>
-              <p className="text-sm mt-1">첫 메시지를 보내보세요!</p>
+              <p className="text-sm mt-1">상대방에게 첫 메시지를 보내보세요!</p>
             </div>
           ) : (
-            messages.map((msg) => {
-              const isMe = msg.sender_id === user?.id;
-              return (
-                <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
-                  <div className={`flex items-end gap-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                    <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 shadow-sm ${
-                      isMe ? 'bg-purple-600 text-white' : 'bg-white text-gray-900 border border-gray-100'
-                    }`}>
-                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                      <p className={`text-[10px] mt-1 ${isMe ? 'text-purple-200' : 'text-gray-400'}`}>
-                        {new Date(msg.sent_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                    </div>
-                    {!isMe && (
-                      <button
-                        onClick={() => handleReport(msg.id)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 text-gray-300 hover:text-red-500"
-                        title="신고하기"
-                      >
-                        <Flag className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
+            messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-xs ${
+                    msg.sender === 'me'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-gray-900'
+                  } rounded-xl px-4 py-3 shadow-sm`}
+                >
+                  <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                  <p
+                    className={`text-xs mt-1 ${
+                      msg.sender === 'me' ? 'text-purple-200' : 'text-gray-400'
+                    }`}
+                  >
+                    {msg.time}
+                  </p>
                 </div>
               );
             })
@@ -408,22 +373,69 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* ═══ Input ═══ */}
+      {/* Clean_Bot Warning Dialog */}
+      {warning && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-sm mx-4 shadow-xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-yellow-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900">Clean_Bot 경고</h3>
+                <p className="text-xs text-gray-500">
+                  경고 {warning.warningCount}/3 (남은 횟수: {warning.remainingWarnings})
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-700 mb-2">
+              메시지에 부적절한 내용이 포함되어 있습니다.
+            </p>
+            {warning.reason && (
+              <p className="text-xs text-gray-500 mb-4 bg-gray-50 p-2 rounded">
+                사유: {warning.reason}
+              </p>
+            )}
+            {warning.remainingWarnings === 0 && (
+              <p className="text-xs text-red-600 mb-4 font-medium">
+                ⚠️ 이 메시지를 전송하면 채팅이 차단됩니다.
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={handleCancelWarning}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleForceOverride}
+                className="flex-1 px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                그래도 전송
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Input */}
       <div className="bg-white border-t border-gray-200 p-4">
         <div className="max-w-3xl mx-auto flex gap-2">
           <input
             type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="메시지를 입력하세요"
-            disabled={sending}
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400 disabled:opacity-50"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyPress}
+            placeholder={isBlocked ? '채팅이 차단되었습니다' : '메시지를 입력하세요'}
+            disabled={isBlocked || status !== 'connected'}
+            maxLength={1000}
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:border-purple-400 disabled:opacity-50 disabled:bg-gray-100"
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim() || sending}
-            className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-3 rounded-xl transition-colors disabled:opacity-50"
+            disabled={isBlocked || !message.trim() || status !== 'connected'}
+            className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="w-5 h-5" />
           </button>

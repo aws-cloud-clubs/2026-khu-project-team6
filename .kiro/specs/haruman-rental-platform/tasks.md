@@ -222,7 +222,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - **Validates: Requirements 12.5**
 
 - [ ] 13. AI 챗봇 Lambda 구현 (`POST /ai/chat`)
-  - [~] 13.1 AI 챗봇 엔드포인트 구현
+  - [x] 13.1 AI 챗봇 엔드포인트 구현
     - 메시지 500자 초과 시 거부
     - AWS Bedrock Claude 3 Haiku 호출 (10초 타임아웃, 재시도 없음)
     - `suggestedItemTypes` 배열 반환, 오류 시 "AI 추천을 불러올 수 없습니다" 응답
@@ -267,7 +267,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 로그인 실패 메시지, 계정 잠금 안내
     - _Requirements: 1.1, 1.4, 1.5, 1.6, 1.8, 1.9, 2.2, 2.6, 15.1, 15.2_
 
-  - [~] 16.3 AI 챗봇 + 체크박스 연동 페이지 구현
+  - [x] 16.3 AI 챗봇 + 체크박스 연동 페이지 구현
     - 1280×720 뷰포트에서 챗봇·체크리스트 동시 표시
     - Bedrock 응답 수신 후 2초 이내 체크박스 자동 선택
     - "이 조건으로 물품 찾기" 버튼, 미선택 시 오류 메시지
@@ -288,7 +288,7 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
     - 알림 토스트/배지 UI, 연결 끊김 메시지
     - _Requirements: 6.1, 6.2, 6.3, 6.7_
 
-  - [~] 16.7 1:1 채팅 UI 구현 (Direct_Trade 전용)
+  - [x] 16.7 1:1 채팅 UI 구현 (Direct_Trade 전용)
     - 채팅방 입장, 메시지 전송, Clean_Bot 경고 팝업("그래도 전송" / "취소")
     - Pickup_Zone 채팅 UI 숨김 처리
     - _Requirements: 6.4, 6.5, 12.4, 13.3_
@@ -423,26 +423,6 @@ AWS Serverless(Lambda Node.js 20.x) + Supabase PostgreSQL + React SPA 기반의 
 - `NODE_ENV=test` 환경에서는 모든 외부 서비스(SES, Bedrock, SMS)를 mock으로 대체합니다.
 - 체크포인트는 단계별 점진적 검증을 보장합니다.
 - 보증금 계산 로직(`calculateDepositRefund`)은 프로퍼티 테스트로 수학적 불변식을 검증합니다.
-
-### ⚠️ 공식 DB 스키마 (2026-06-02 최종 확정)
-
-**기존 `profiles`, `products`, `orders` 테이블은 완전 폐기. 코드에서 절대 참조 금지.**
-
-| 테이블 | PK | 주요 컬럼 | 비고 |
-|--------|-----|-----------|------|
-| `users` | `id` (UUID) | `email`, `nickname`, `real_name`, `phone`, `created_at` | 회원 |
-| `items` | `id` (UUID) | `seller_id`(FK→users), `title`, `description`, `price_per_day`, `deposit_amount`, `trade_type`, `status`(기본 'AVAILABLE'), `image_url`, `bank_name`, `account_number`, `created_at` | 상품 |
-| `rentals` | `id` (UUID) | `item_id`(FK→items), `buyer_id`(FK→users), `seller_id`(FK→users), `status`(기본 'REQUESTED'), `rental_start`, `rental_end`, `created_at` | 대여/거래 |
-| `chat_rooms` | `id` (UUID) | `rental_id`(FK→rentals, **Nullable**), `seller_id`(FK→users), `buyer_id`(FK→users), `buyer_confirmed`(bool, false), `seller_confirmed`(bool, false), `created_at` | 채팅방 |
-| `chat_messages` | `id` (UUID) | `room_id`(FK→chat_rooms), `sender_id`(FK→users), `content`, `clean_bot_status`, `sent_at` | 채팅메시지 |
-| `reports` | `id` (UUID) | `message_id`(FK→chat_messages), `reporter_id`(FK→users), `reported_user_id`(FK→users), `reason`(nullable), `created_at` | 신고 |
-
-### 핵심 비즈니스 플로우
-
-1. **문의하기** → `chat_rooms` INSERT (`rental_id = NULL`) → 계좌 정보 미노출
-2. **구매하기** → `rentals` INSERT (status='REQUESTED') → `chat_rooms.rental_id` UPDATE → 계좌 정보 오픈
-3. **송금 완료** → `chat_rooms.buyer_confirmed = true`
-4. **입금 확인 완료** → `chat_rooms.seller_confirmed = true` → `rentals.status = 'COMPLETED'`
 
 ## Task Dependency Graph
 
