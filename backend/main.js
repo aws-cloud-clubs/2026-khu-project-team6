@@ -1026,10 +1026,56 @@ app.post('/chat/rooms/:roomId/messages', authMiddleware, async (req, res) => {
   console.log(`[Chat Send] 요청 수신: user=${userId.slice(0,8)} room=${roomId.slice(0,8)} content="${(content || '').slice(0,30)}"`);
 
   if (!content || content.trim().length === 0) {
-    return res.status(422).json({ error: { message: '메시지 내용이 필요합니다.' } });
-  }
+  return res.status(422).json({ error: { message: '메시지 내용이 필요합니다.' } });
+}
 
-  try {
+// Clean_Bot 검사
+const command = new InvokeModelCommand({
+  modelId: 'us.amazon.nova-lite-v1:0',
+  contentType: 'application/json',
+  accept: 'application/json',
+  body: JSON.stringify({
+    messages: [
+      {
+        role: 'user',
+        content: [{ text: content }]
+      }
+    ],
+    system: [
+      {
+        text: `
+너는 채팅 검열 봇이다.
+
+규칙:
+1. 욕설, 비속어, 심한 모욕 표현이 있으면 BANNED
+2. 없으면 PASSED
+3. 오직 BANNED 또는 PASSED 한 단어만 출력
+`
+      }
+    ],
+    inferenceConfig: {
+      maxTokens: 5,
+      temperature: 0
+    }
+  })
+});
+
+const aiResponse = await bedrock.send(command);
+const aiBody = JSON.parse(Buffer.from(aiResponse.body).toString());
+
+const verdict =
+  aiBody?.output?.message?.content?.[0]?.text?.trim() || 'PASSED';
+
+console.log('[CleanBot]', verdict);
+
+if (verdict.includes('BANNED')) {
+  return res.status(200).json({
+    event: 'clean_bot_warning',
+    message: '부적절한 표현이 감지되었습니다.'
+  });
+}
+
+try {
     // 채팅방 참여자 확인
     const { data: room, error: roomErr } = await client
       .from('chat_rooms')

@@ -237,6 +237,7 @@ export const handler = async (
 
     // 4. Clean_Bot 분석
     const cleanBotResult = await analyzeMessage(content);
+    console.log('🔥 CleanBot 결과:', cleanBotResult);
 
     const supabase = getSupabaseClient();
 
