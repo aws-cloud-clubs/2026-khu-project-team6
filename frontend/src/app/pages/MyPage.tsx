@@ -24,6 +24,21 @@ interface NotificationItem {
   created_at: string;
 }
 
+/** content JSON 파싱 헬퍼 */
+function parseNotificationContent(content: string): { title: string; body: string; roomId?: string } {
+  try {
+    const parsed = JSON.parse(content);
+    return {
+      title: parsed.title || '알림',
+      body: parsed.body || content,
+      roomId: parsed.roomId || undefined,
+    };
+  } catch {
+    // JSON이 아닌 순수 문자열인 경우
+    return { title: '알림', body: content };
+  }
+}
+
 export default function MyPage() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading, logout, user } = useAuth();
@@ -109,25 +124,42 @@ export default function MyPage() {
               <p className="text-sm text-gray-400 text-center py-4">알림이 없습니다.</p>
             ) : (
               <div className="space-y-2 max-h-64 overflow-auto">
-                {notifications.map((notif) => (
-                  <div
-                    key={notif.id}
-                    onClick={() => handleMarkRead(notif.id)}
-                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                      notif.status !== 'read' ? 'bg-purple-50 border border-purple-100' : 'bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="text-sm text-gray-800 flex-1">{notif.content}</p>
-                      {notif.status !== 'read' && (
-                        <span className="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 mt-1.5" />
-                      )}
+                {notifications.map((notif) => {
+                  const { title, body, roomId } = parseNotificationContent(notif.content);
+                  return (
+                    <div
+                      key={notif.id}
+                      onClick={() => {
+                        handleMarkRead(notif.id);
+                        // 채팅 알림이면 해당 채팅방으로 이동
+                        if (notif.type === 'chat_message' && roomId) {
+                          navigate('/chat', { state: { roomId, product: {} } });
+                        }
+                      }}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        notif.status !== 'read' ? 'bg-purple-50 border border-purple-100' : 'bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            {notif.type === 'chat_message' && (
+                              <MessageCircle className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />
+                            )}
+                            <p className="text-sm font-medium text-gray-900 truncate">{title}</p>
+                          </div>
+                          <p className="text-xs text-gray-600 mt-0.5 truncate">{body}</p>
+                        </div>
+                        {notif.status !== 'read' && (
+                          <span className="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 mt-1.5 ml-2" />
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {new Date(notif.created_at).toLocaleString('ko-KR')}
+                      </p>
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">
-                      {new Date(notif.created_at).toLocaleString('ko-KR')}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

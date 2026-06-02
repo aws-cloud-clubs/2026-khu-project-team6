@@ -131,6 +131,8 @@ const handleSubmit = async (e: React.FormEvent) => {
       image_url: imagePreview,
       bank_name: bankName || null,
       account_number: accountNumber || null,
+      category: category || null,
+      subcategory: subCategory || null,
     });
 
     console.log('상품 등록 결과:', result.data);

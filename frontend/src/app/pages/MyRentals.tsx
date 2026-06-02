@@ -10,8 +10,11 @@ interface Rental {
   image: string;
   price: string;
   rentalDate: string;
+  rentalEnd: string | null;
+  daysLeft: number | null;
   status: string;
   tradeMethod: string;
+  role: string;
 }
 
 export default function MyRentals() {
@@ -39,8 +42,18 @@ export default function MyRentals() {
     switch (status) {
       case '대여 중':
         return 'text-purple-600';
+      case '거래 완료':
+        return 'text-green-600';
+      case '확정':
+        return 'text-blue-600';
+      case '요청 중':
+        return 'text-yellow-600';
       case '반납 완료':
-        return 'text-gray-600';
+        return 'text-green-700';
+      case '취소됨':
+        return 'text-red-500';
+      case '연체 중':
+        return 'text-red-600';
       default:
         return 'text-gray-600';
     }
@@ -57,6 +70,7 @@ export default function MyRentals() {
       };
       navigate('/chat', { state: { product } });
     }
+    // 픽업존 대여는 상세 정보만 확인 (채팅 없음)
   };
 
   if (authLoading || loading) {
@@ -90,11 +104,7 @@ export default function MyRentals() {
               <div
                 key={rental.id}
                 onClick={() => handleRentalClick(rental)}
-                className={`bg-white rounded-xl p-4 shadow-sm ${
-                  rental.tradeMethod === '직거래'
-                    ? 'cursor-pointer hover:shadow-md transition-shadow'
-                    : ''
-                }`}
+                className="bg-white rounded-xl p-4 shadow-sm cursor-pointer hover:shadow-md transition-shadow"
               >
                 <div className="flex gap-4">
                   <div className="w-24 h-24 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
@@ -123,11 +133,25 @@ export default function MyRentals() {
                       </span>
                     </div>
                     <p className="text-sm text-gray-600 mb-1">대여 기간: {rental.rentalDate}</p>
+                    {rental.daysLeft !== null && rental.status !== '거래 완료' && rental.status !== '취소됨' && (
+                      <p className={`text-xs font-medium mb-1 ${
+                        rental.daysLeft < 0 ? 'text-red-600' :
+                        rental.daysLeft <= 1 ? 'text-orange-500' :
+                        rental.daysLeft <= 3 ? 'text-yellow-600' :
+                        'text-gray-500'
+                      }`}>
+                        {rental.daysLeft < 0
+                          ? `⚠️ ${Math.abs(rental.daysLeft)}일 연체 중`
+                          : rental.daysLeft === 0
+                          ? '⏰ 오늘 반납 마감'
+                          : `📅 반납까지 ${rental.daysLeft}일 남음`}
+                      </p>
+                    )}
                     <div className="flex items-center justify-between">
                       <p className="text-lg font-bold text-purple-600">{rental.price}</p>
-                      {rental.tradeMethod === '직거래' && (
-                        <span className="text-xs text-gray-500">클릭하여 채팅 보기</span>
-                      )}
+                      <span className="text-xs text-gray-500">
+                        {rental.role === 'buyer' ? '구매' : '판매'}
+                      </span>
                     </div>
                   </div>
                 </div>

@@ -1,10 +1,10 @@
 /**
  * 1:1 채팅 페이지 — 구매/송금 프로세스 통합
- * 디버깅 로그 포함 버전
+ * 실시간 인앱 알림(토스트) + 디버깅 로그 포함 버전
  */
 
-import { ArrowLeft, Send, CreditCard, CheckCircle2, Clock, Flag } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { ArrowLeft, Send, CreditCard, CheckCircle2, Clock, Flag, Bell } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
 import apiClient from '../../api/client';
@@ -23,6 +23,14 @@ interface RoomData {
   status: string;
   buyer_confirmed: boolean;
   seller_confirmed: boolean;
+}
+
+/** 인앱 알림 토스트 데이터 */
+interface ToastNotification {
+  id: string;
+  title: string;
+  body: string;
+  timestamp: number;
 }
 
 type Phase = 'chat' | 'payment' | 'waiting' | 'done';
@@ -45,14 +53,40 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
+  // 실시간 알림 토스트 상태
+  const [toasts, setToasts] = useState<ToastNotification[]>([]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevMessageCountRef = useRef<number>(0);
+  const prevMessageIdsRef = useRef<Set<string>>(new Set());
 
   // 디버그 로그 추가 함수
   const log = (msg: string) => {
     console.log(`[Chat] ${msg}`);
     setDebugLog((prev) => [...prev.slice(-9), `${new Date().toLocaleTimeString()} ${msg}`]);
   };
+
+  // ─── 실시간 인앱 알림 토스트 ───
+  const showToast = useCallback((title: string, body: string) => {
+    const toast: ToastNotification = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      title,
+      body,
+      timestamp: Date.now(),
+    };
+    setToasts((prev) => [...prev, toast]);
+    log(`🔔 토스트 알림: ${title} — ${body.slice(0, 30)}`);
+  }, []);
+
+  // 토스트 자동 제거 (4초)
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const timer = setTimeout(() => {
+      setToasts((prev) => prev.slice(1));
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [toasts]);
 
   // 역할 판별 — room 데이터가 있으면 room 기준, 없으면 product.seller_id로 추론
   // ⚠️ 상호 배타적: isBuyer와 isSeller는 절대 동시에 true가 될 수 없음
@@ -85,11 +119,27 @@ export default function Chat() {
     }
   }, [room, isBuyer, isSeller]);
 
-  // 메시지 로드
+  // 메시지 로드 — 새 메시지 감지 시 토스트 알림
   const loadMessages = async (rid: string) => {
     try {
       const res = await apiClient.get(`/chat/rooms/${rid}/messages`);
-      setMessages(res.data.messages || []);
+      const newMessages: ChatMessage[] = res.data.messages || [];
+
+      // 새 메시지 감지: 상대방이 보낸 메시지가 새로 추가됐으면 토스트
+      if (prevMessageIdsRef.current.size > 0) {
+        const newOnes = newMessages.filter(
+          (msg) => !prevMessageIdsRef.current.has(msg.id) && msg.sender_id !== user?.id
+        );
+        if (newOnes.length > 0) {
+          const latest = newOnes[newOnes.length - 1];
+          showToast('새 메시지', latest.content.slice(0, 50));
+        }
+      }
+
+      // 메시지 ID 세트 업데이트
+      prevMessageIdsRef.current = new Set(newMessages.map((m) => m.id));
+      prevMessageCountRef.current = newMessages.length;
+      setMessages(newMessages);
     } catch (err: unknown) {
       const e = err as { response?: { status?: number; data?: unknown } };
       log(`메시지 로드 실패: status=${e?.response?.status} data=${JSON.stringify(e?.response?.data)}`);
@@ -261,6 +311,32 @@ export default function Chat() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
+      {/* ═══ 실시간 알림 토스트 (화면 상단) ═══ */}
+      {toasts.length > 0 && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[90%] max-w-md">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className="bg-white border border-purple-200 rounded-xl shadow-lg px-4 py-3 flex items-start gap-3 animate-[slideDown_0.3s_ease-out]"
+            >
+              <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <Bell className="w-4 h-4 text-purple-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-900">{toast.title}</p>
+                <p className="text-xs text-gray-600 truncate">{toast.body}</p>
+              </div>
+              <button
+                onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+                className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200">
         <div className="px-6 py-4 flex items-center gap-3">

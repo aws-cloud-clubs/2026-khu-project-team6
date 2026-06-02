@@ -50,7 +50,6 @@ interface ChatMessage {
   sender_id: string;
   content: string;
   clean_bot_status: string;
-  warning_count: number;
   sent_at: string;
 }
 
@@ -118,7 +117,6 @@ async function validateChatRoom(
 
   const rentalData = rental as Rental;
   if (rentalData.trade_type !== 'direct_trade') {
-    // Pickup_Zone 채팅 비활성화 (Requirements: 6.4, 12.1)
     throw new AppError(
       403,
       ErrorCodes.FORBIDDEN,
@@ -131,21 +129,20 @@ async function validateChatRoom(
 
 /**
  * 해당 사용자의 채팅방 내 경고 횟수를 조회합니다.
+ * warned 상태 메시지의 개수로 카운트합니다.
  */
 async function getWarningCount(roomId: string, userId: string): Promise<number> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('chat_messages')
-    .select('warning_count')
+    .select('id')
     .eq('room_id', roomId)
     .eq('sender_id', userId)
-    .eq('clean_bot_status', 'warned')
-    .order('sent_at', { ascending: false });
+    .eq('clean_bot_status', 'warned');
 
   if (error || !data) return 0;
 
-  // 누적 경고 횟수 = warned 상태 메시지 수
-  return (data as { warning_count: number }[]).length;
+  return data.length;
 }
 
 /**
@@ -157,7 +154,7 @@ async function getWarningCount(roomId: string, userId: string): Promise<number> 
  * 3. 채팅 차단 여부 확인 (경고 3회 이상)
  * 4. Clean_Bot 분석
  * 5. 메시지 DB 저장
- * 6. 상대방에게 WebSocket 전송
+ * 6. 상대방에게 WebSocket 전송 + 인앱 알림 INSERT
  */
 export const handler = async (
   event: WebSocketMessageEvent,
@@ -224,7 +221,7 @@ export const handler = async (
     // 2. 채팅방 유효성 검증
     const room = await validateChatRoom(roomId, userId);
 
-    // 3. 채팅 차단 여부 확인 (경고 3회 이상 → 차단, Requirements: 12.5, 13.3)
+    // 3. 채팅 차단 여부 확인 (경고 3회 이상 → 차단)
     const warningCount = await getWarningCount(roomId, userId);
     if (warningCount >= 3) {
       return {
@@ -238,12 +235,12 @@ export const handler = async (
       };
     }
 
-    // 4. Clean_Bot 분석 (Requirements: 12.3, 13.1, 13.4)
+    // 4. Clean_Bot 분석
     const cleanBotResult = await analyzeMessage(content);
 
     const supabase = getSupabaseClient();
 
-    // Clean_Bot 경고 판정 처리 (Requirements: 12.4, 13.2)
+    // Clean_Bot 경고 판정 처리
     if (cleanBotResult.verdict === 'warned' && !forceOverride) {
       // 경고 메시지 보류 상태로 저장 (수신자에게 즉시 전달하지 않음)
       const { data: savedMsg, error: insertError } = await supabase
@@ -253,7 +250,6 @@ export const handler = async (
           sender_id: userId,
           content,
           clean_bot_status: 'warned',
-          warning_count: warningCount + 1,
           sent_at: new Date().toISOString(),
         })
         .select()
@@ -269,7 +265,6 @@ export const handler = async (
         };
       }
 
-      // 경고 로그 기록 (Requirements: 13.2)
       console.warn('[Clean_Bot] 경고 메시지 보류:', {
         userId,
         roomId,
@@ -279,7 +274,7 @@ export const handler = async (
         timestamp: new Date().toISOString(),
       });
 
-      // 발신자에게 경고 알림 전송 (클라이언트에서 "그래도 전송" / "취소" 팝업 표시)
+      // 발신자에게 경고 알림 전송
       const warningPayload: NotificationPayload = {
         type: 'chat_message',
         message: '메시지에 부적절한 내용이 포함되어 있습니다.',
@@ -321,7 +316,6 @@ export const handler = async (
         sender_id: userId,
         content,
         clean_bot_status: cleanBotStatus,
-        warning_count: forceOverride ? warningCount + 1 : warningCount,
         sent_at: new Date().toISOString(),
       })
       .select()
@@ -339,7 +333,7 @@ export const handler = async (
 
     const message = savedMsg as ChatMessage;
 
-    // 6. 상대방에게 WebSocket 전송 (Requirements: 6.5)
+    // 6. 상대방에게 WebSocket 전송
     const recipientId =
       room.seller_id === userId ? room.buyer_id : room.seller_id;
 
@@ -359,6 +353,21 @@ export const handler = async (
     };
 
     await pushNotification(recipientId, chatPayload);
+
+    // 7. 인앱 알림 — notifications 테이블에 INSERT (상대방에게)
+    try {
+      await supabase.from('notifications').insert({
+        user_id: recipientId,
+        type: 'chat_message',
+        channel: 'push',
+        status: 'unread',
+        content: `새 메시지: ${content.slice(0, 100)}`,
+        sent_at: new Date().toISOString(),
+      });
+    } catch (notifyErr) {
+      // 알림 저장 실패해도 메시지 전송은 성공 처리
+      console.error('[sendMessage] 인앱 알림 INSERT 실패:', notifyErr);
+    }
 
     return {
       statusCode: 200,

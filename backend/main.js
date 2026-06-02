@@ -552,6 +552,32 @@ app.get('/users/me', async (req, res) => {
   });
 });
 
+// --- FCM 토큰 업데이트 (인앱 푸시 알림용 — users.fcm_token 저장) ---
+app.put('/users/fcm-token', authMiddleware, async (req, res) => {
+  try {
+    const { fcm_token } = req.body;
+    if (!fcm_token || typeof fcm_token !== 'string') {
+      return res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'fcm_token이 필요합니다.' } });
+    }
+
+    const client = supabaseAdmin || supabase;
+    const { error } = await client
+      .from('users')
+      .update({ fcm_token })
+      .eq('id', req.user.id);
+
+    if (error) {
+      console.error('[FCM Token] UPDATE 실패:', error.message);
+      return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'FCM 토큰 저장에 실패했습니다.' } });
+    }
+
+    res.json({ message: 'FCM 토큰이 업데이트되었습니다.' });
+  } catch (err) {
+    console.error('[FCM Token] 예외:', err.message || err);
+    res.status(500).json({ error: { message: '서버 오류' } });
+  }
+});
+
 // --- /users/me 프로필 수정 ---
 app.put('/users/me', async (req, res) => {
   const authHeader = req.headers.authorization;
@@ -748,7 +774,7 @@ app.delete('/cards/:id', authMiddleware, async (req, res) => {
 app.post('/items', authMiddleware, async (req, res) => {
   try {
     const client = supabaseAdmin || supabase;
-    const { title, description, price, deposit, trade_type, image_url, bank_name, account_number } = req.body;
+    const { title, description, price, deposit, trade_type, image_url, bank_name, account_number, category, subcategory } = req.body;
 
     const { data, error } = await client
       .from('items')
@@ -762,6 +788,8 @@ app.post('/items', authMiddleware, async (req, res) => {
         image_url: image_url || null,
         bank_name: bank_name || null,
         account_number: account_number || null,
+        category: category || null,
+        subcategory: subcategory || null,
       })
       .select()
       .single();
@@ -781,7 +809,19 @@ app.post('/items', authMiddleware, async (req, res) => {
 app.get('/items', async (req, res) => {
   try {
     const client = supabaseAdmin || supabase;
+    const { category, subcategory } = req.query;
+
     let query = client.from('items').select('*').order('created_at', { ascending: false });
+
+    // category 필터 (items.category 컬럼 직접 매칭)
+    if (category && typeof category === 'string') {
+      query = query.eq('category', category);
+    }
+
+    // subcategory 필터 (items.subcategory 컬럼 직접 매칭)
+    if (subcategory && typeof subcategory === 'string') {
+      query = query.eq('subcategory', subcategory);
+    }
 
     const { data, error } = await query;
     if (error) {
@@ -799,6 +839,8 @@ app.get('/items', async (req, res) => {
       status: item.status,
       bank_name: item.bank_name,
       account_number: item.account_number,
+      category: item.category || null,
+      subcategory: item.subcategory || null,
     }));
 
     res.json({ items });
@@ -1027,6 +1069,41 @@ app.post('/chat/rooms/:roomId/messages', authMiddleware, async (req, res) => {
     }
 
     console.log('[Chat Send] 성공:', savedMsg.id);
+
+    // ─── 인앱 푸시 알림: 상대방에게 notifications INSERT ───
+    try {
+      const recipientId = room.seller_id === userId ? room.buyer_id : room.seller_id;
+
+      // 보낸 사람 닉네임 조회
+      const { data: senderProfile } = await client
+        .from('users')
+        .select('nickname')
+        .eq('id', userId)
+        .single();
+
+      const senderNickname = senderProfile?.nickname || '알 수 없음';
+
+      await client.from('notifications').insert({
+        user_id: recipientId,
+        type: 'chat_message',
+        channel: 'push',
+        status: 'unread',
+        content: JSON.stringify({
+          title: senderNickname,
+          body: content.trim().slice(0, 200),
+          roomId,
+          senderId: userId,
+          messageId: savedMsg.id,
+        }),
+        sent_at: new Date().toISOString(),
+      });
+
+      console.log('[Chat Send] 인앱 알림 전송 완료 → recipient:', recipientId.slice(0, 8));
+    } catch (notifyErr) {
+      // 알림 발송 실패해도 메시지 전송은 정상 처리
+      console.error('[Chat Send] 인앱 알림 INSERT 실패 (무시):', notifyErr.message || notifyErr);
+    }
+
     return res.status(201).json({ message: savedMsg });
   } catch (err) {
     console.error('[Chat Send] 예외:', err.message || err);
@@ -1325,16 +1402,16 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
     const client = supabaseAdmin || supabase;
     const userId = req.user.id;
 
-    // buyer 또는 seller로 참여한 rentals 조회 + items JOIN
+    // buyer 또는 seller로 참여한 rentals 조회
     const { data: buyerRentals, error: buyerErr } = await client
       .from('rentals')
-      .select('id, item_id, buyer_id, seller_id, status, rental_start, rental_end, created_at')
+      .select('id, item_id, buyer_id, seller_id, status, trade_type, rental_start, rental_end, created_at')
       .eq('buyer_id', userId)
       .order('created_at', { ascending: false });
 
     const { data: sellerRentals, error: sellerErr } = await client
       .from('rentals')
-      .select('id, item_id, buyer_id, seller_id, status, rental_start, rental_end, created_at')
+      .select('id, item_id, buyer_id, seller_id, status, trade_type, rental_start, rental_end, created_at')
       .eq('seller_id', userId)
       .order('created_at', { ascending: false });
 
@@ -1342,7 +1419,7 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: { message: '대여 내역 조회 실패' } });
     }
 
-    // 중복 제거 (buyer이면서 seller인 경우는 없지만 안전하게)
+    // 중복 제거
     const allRentals = [...(buyerRentals || []), ...(sellerRentals || [])];
     const unique = allRentals.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
 
@@ -1359,22 +1436,53 @@ app.get('/rentals/me', authMiddleware, async (req, res) => {
       }
     }
 
+    // 상태 매핑 (한글 상태 + 영문 상태 모두 지원)
+    const statusMap = {
+      'REQUESTED': '요청 중',
+      'CONFIRMED': '확정',
+      'COMPLETED': '거래 완료',
+      'CANCELLED': '취소됨',
+      '예약요청': '요청 중',
+      '예약확정': '확정',
+      '대여중': '대여 중',
+      '반납완료': '반납 완료',
+      '검수중': '검수 중',
+      '분쟁중': '분쟁 중',
+      '완료': '거래 완료',
+      '취소': '취소됨',
+      '연체중': '연체 중',
+      '연체종료': '연체 종료',
+    };
+
     const rentals = unique.map((r) => {
       const item = itemsMap[r.item_id] || {};
-      const statusMap = {
-        'REQUESTED': '요청 중',
-        'CONFIRMED': '확정',
-        'COMPLETED': '거래 완료',
-        'CANCELLED': '취소됨',
-      };
+      // trade_type 결정: rental에 있으면 rental것, 없으면 item에서
+      const tradeMethod = r.trade_type === 'pickup_zone' ? '픽업존'
+        : r.trade_type === 'direct_trade' ? '직거래'
+        : item.trade_type === 'pickup_zone' ? '픽업존'
+        : item.trade_type === 'direct_trade' ? '직거래'
+        : item.trade_type || '직거래';
+
+      // 마감 기한 계산
+      let daysLeft = null;
+      if (r.rental_end) {
+        const endDate = new Date(r.rental_end);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        endDate.setHours(0, 0, 0, 0);
+        daysLeft = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+      }
+
       return {
         id: r.id,
         productName: item.title || '상품명 없음',
         image: item.image_url || '',
         price: item.price_per_day ? `${item.price_per_day}원/일` : '가격 미정',
         rentalDate: r.rental_start && r.rental_end ? `${r.rental_start} ~ ${r.rental_end}` : '기간 미정',
+        rentalEnd: r.rental_end || null,
+        daysLeft,
         status: statusMap[r.status] || r.status,
-        tradeMethod: item.trade_type || '직거래',
+        tradeMethod,
         role: r.buyer_id === userId ? 'buyer' : 'seller',
       };
     });
