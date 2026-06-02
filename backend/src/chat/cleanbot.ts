@@ -52,6 +52,8 @@ export async function analyzeMessage(content: string): Promise<CleanBotResult> {
     return mockAnalyzeMessage(content);
   }
 
+  console.log('[CleanBot] BEDROCK MODE');
+
   const client = new BedrockRuntimeClient({
     region: 'ap-northeast-2',
     credentials: {
@@ -88,6 +90,8 @@ export async function analyzeMessage(content: string): Promise<CleanBotResult> {
     // 공백·개행 제거 후 판정
     const verdict = rawText.trim().toUpperCase();
 
+    console.log('[CleanBot OUTPUT]', verdict);
+    
     if (verdict === 'BANNED') {
       return { verdict: 'warned', reason: '비속어/욕설 감지' };
     }
