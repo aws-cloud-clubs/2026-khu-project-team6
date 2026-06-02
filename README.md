@@ -278,7 +278,9 @@ psql "$DATABASE_URL" -f infra/database/003_seed.sql
 
 ## 👥 팀원
 
-**경희대학교 소프트웨어학과 2026 프로젝트 — Team 6**
+**경희대학교 컴퓨터공학과 ACC 2026 프로젝트 — Team 6**
+2024103291 고명주 myoungjugo
+2025105390 오소원 wanimetro
 
 ---
 
