@@ -26,6 +26,7 @@ import AdminChat from './pages/AdminChat';
  * 인증 상태 감지 컴포넌트
  * 메일 링크 클릭 후 리다이렉트 시 SIGNED_IN 이벤트를 감지하여
  * nickname이 없으면 /complete-profile로 보냄
+ * 단, /signup 페이지에서는 개입하지 않음 (Signup의 자체 Step 2 플로우 존중)
  */
 function AuthRedirectHandler() {
   const navigate = useNavigate();
@@ -34,6 +35,10 @@ function AuthRedirectHandler() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
         const metadata = session.user.user_metadata;
+        // /signup 페이지에서는 리다이렉트하지 않음 (자체 인증 플로우 사용 중)
+        if (window.location.pathname.startsWith('/signup')) {
+          return;
+        }
         // nickname이 없으면 아직 프로필 미완성 → Step 2로
         if (!metadata?.nickname) {
           navigate('/complete-profile', { replace: true });
