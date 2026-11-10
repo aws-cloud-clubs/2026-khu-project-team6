@@ -35,7 +35,7 @@ AI 챗봇이 사용자의 상황을 분석해 필요한 물품을 자동 추천�
 
 ### 💬 실시간 1:1 채팅
 - WebSocket 기반 판매자-구매자 직거래 상담
-- **Clean_Bot**: AI 비속어/욕설 실시간 필터링 (Bedrock Nova Lite, 5초 타임아웃)
+- **Clean_Bot**: AI 비속어/욕설 실시간 필터링 (Bedrock Nova Lite)
 
 ### 🔐 인증 및 보안
 - Supabase Auth + 이메일 인증 (Resend API)
@@ -54,6 +54,26 @@ AI 챗봇이 사용자의 상황을 분석해 필요한 물품을 자동 추천�
 ### 🛡️ 사기 방지
 - 결제 카드 사전 등록제 (거래 전 카드 인증 필수)
 - 양자 결제 확인 (buyer_confirmed + seller_confirmed)
+
+---
+
+## ⏱ AI 호출이 느려져도 서비스가 멈추지 않게
+
+추천 챗봇(`POST /ai/chat`)은 매 요청마다 AWS Bedrock(Nova Lite)을 호출합니다. Bedrock 응답이 늦어지면 요청이 서버에 계속 묶여 있게 되므로, 호출에 상한을 두고 실패해도 사용자에게는 정상 응답이 가도록 만들었습니다. (`backend/main.js`)
+
+| 상황 | 처리 |
+|---|---|
+| Bedrock 응답이 **5초**를 넘김 | `Promise.race`로 끊고, 에러 대신 `"AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."` + 빈 추천 목록(`suggestedItemTypes: []`)을 200으로 반환 |
+| 응답에서 JSON을 찾지 못함 / JSON 파싱 실패 | 모델이 준 원문 텍스트를 그대로 `reply`로 반환하고 추천 목록은 비움 |
+| `suggestedItemTypes`가 배열이 아님 | 빈 목록으로 바꿔서 반환 |
+| 그 밖의 Bedrock 오류 | `"AI 추천을 불러올 수 없습니다."` + 빈 추천 목록으로 반환 (화면이 깨지지 않게) |
+
+타임아웃이 실제로 얼마나 일어나는지 보려고 Prometheus 지표를 함께 남깁니다 (`GET /metrics`, Grafana 대시보드).
+
+- `bedrock_timeouts_total`: 5초 타임아웃 발생 횟수
+- `bedrock_inference_duration_seconds{status="success|timeout|error"}`: 호출 지연시간 분포 (0.1 ~ 10초 구간)
+
+> 한계: 타임아웃이 나도 Bedrock 쪽 요청 자체는 취소되지 않고 응답만 버립니다. 채팅 검열(Clean_Bot) 호출에는 아직 타임아웃이 없습니다.
 
 ---
 
